@@ -189,6 +189,68 @@ export function generateVersion({ brief, params, source = "AI生成" }) {
 
 export function createProject({ brief, params }) {
   const version = generateVersion({ brief, params });
+  return createProjectFromVersion({ brief, version });
+}
+
+export function normalizeAiVersion({ brief, params, payload, usage, model, source = "DeepSeek", requestId, costUsd }) {
+  const template = getTemplate(brief.templateId);
+  const market = getMarket(brief.market);
+  const parameters = mergeParams(template, params);
+  const safeArray = (value, fallback = []) => (Array.isArray(value) && value.length ? value : fallback);
+  const safeText = (value, fallback = "") => (typeof value === "string" && value.trim() ? value.trim() : fallback);
+  const localFallback = generateVersion({ brief, params, source: "本地兜底" });
+
+  const version = {
+    id: uid("ver"),
+    name: `${source} ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`,
+    createdAt: new Date().toISOString(),
+    source,
+    templateId: template.id,
+    templateName: template.name,
+    marketId: brief.market,
+    marketName: market.label,
+    marketRisk: market.risk,
+    model,
+    usage,
+    requestId,
+    costUsd,
+    parameters,
+    titleCandidates: safeArray(payload.titleCandidates, localFallback.titleCandidates).slice(0, 10),
+    selectedTitle: safeText(payload.selectedTitle, payload.titleCandidates?.[0] || localFallback.selectedTitle),
+    logline: safeText(payload.logline, localFallback.logline),
+    sellingPoints: safeArray(payload.sellingPoints, localFallback.sellingPoints),
+    characters: safeArray(payload.characters, localFallback.characters).map((item, index) => ({
+      role: safeText(item.role, localFallback.characters[index]?.role || "角色"),
+      name: safeText(item.name, localFallback.characters[index]?.name || `角色${index + 1}`),
+      archetype: safeText(item.archetype, localFallback.characters[index]?.archetype || "短剧功能角色"),
+      motive: safeText(item.motive, localFallback.characters[index]?.motive || "推动核心冲突"),
+      secret: safeText(item.secret, localFallback.characters[index]?.secret || "持有剧情反转信息"),
+    })),
+    outline: safeArray(payload.outline, localFallback.outline).map((item, index) => ({
+      id: uid("arc"),
+      stage: safeText(item.stage, localFallback.outline[index]?.stage || `阶段 ${index + 1}`),
+      summary: safeText(item.summary, localFallback.outline[index]?.summary || "推进主线冲突和反转。"),
+    })),
+    episodes: safeArray(payload.episodes, localFallback.episodes)
+      .slice(0, 3)
+      .map((item, index) => ({
+        number: Number(item.number || index + 1),
+        title: safeText(item.title, localFallback.episodes[index]?.title || `第 ${index + 1} 集`),
+        hook: safeText(item.hook, localFallback.episodes[index]?.hook || "用强事件制造点击理由。"),
+        beat: safeText(item.beat, localFallback.episodes[index]?.beat || "定调、冲突、钩子。"),
+        script: safeText(item.script, localFallback.episodes[index]?.script || "本集围绕核心误会和反击推进。"),
+        dialogue: safeArray(item.dialogue, localFallback.episodes[index]?.dialogue || ["“真相会自己开口。”"]),
+      })),
+    adHooks: safeArray(payload.adHooks, localFallback.adHooks),
+  };
+
+  return {
+    ...version,
+    score: scoreScript(version),
+  };
+}
+
+export function createProjectFromVersion({ brief, version, notice }) {
   return {
     id: uid("proj"),
     name: brief.title || version.selectedTitle,
@@ -202,7 +264,7 @@ export function createProject({ brief, params }) {
       {
         id: uid("comment"),
         author: "系统",
-        text: "初版已生成，可先检查前 3 集钩子和市场适配度。",
+        text: notice || "初版已生成，可先检查前 3 集钩子和市场适配度。",
         createdAt: new Date().toISOString(),
       },
     ],
@@ -210,14 +272,25 @@ export function createProject({ brief, params }) {
   };
 }
 
+export function buildRewriteParams(activeParams, instruction = "") {
+  const isConflict = instruction.includes("冲突") || instruction.includes("反击") || instruction.includes("羞辱");
+  const isAdHook = instruction.includes("投流") || instruction.includes("钩子") || instruction.includes("点击");
+  const isLower = instruction.includes("降低") || instruction.includes("克制") || instruction.includes("合规");
+  const isLocalization = instruction.includes("本地化") || instruction.includes("市场") || instruction.includes("文化");
+
+  return {
+    ...activeParams,
+    conflict: clamp(activeParams.conflict + (isConflict ? 8 : 3), 0, 100),
+    hookDensity: clamp(activeParams.hookDensity + (isAdHook ? 10 : 4), 0, 100),
+    humiliation: clamp(activeParams.humiliation + (isLower ? -12 : isConflict ? 5 : 2), 0, 100),
+    reversal: clamp(activeParams.reversal + (isAdHook ? 4 : 2), 0, 100),
+    sweet: clamp(activeParams.sweet + (isLocalization ? 2 : 0), 0, 100),
+  };
+}
+
 export function rewriteVersion(project, instruction) {
   const active = project.versions.find((version) => version.id === project.activeVersionId) || project.versions[0];
-  const nextParams = {
-    ...active.parameters,
-    conflict: clamp(active.parameters.conflict + (instruction.includes("冲突") ? 8 : 3), 0, 100),
-    hookDensity: clamp(active.parameters.hookDensity + (instruction.includes("投流") ? 10 : 4), 0, 100),
-    humiliation: clamp(active.parameters.humiliation + (instruction.includes("降低") ? -12 : 2), 0, 100),
-  };
+  const nextParams = buildRewriteParams(active.parameters, instruction);
   const next = generateVersion({
     brief: project.brief,
     params: nextParams,
