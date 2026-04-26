@@ -6,8 +6,8 @@ export function uid(prefix = "id") {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export function getTemplate(templateId) {
-  return templates.find((template) => template.id === templateId) || templates[0];
+export function getTemplate(templateId, templateCatalog = templates) {
+  return templateCatalog.find((template) => template.id === templateId) || templates.find((template) => template.id === templateId) || templates[0];
 }
 
 export function getMarket(marketId) {
@@ -146,8 +146,8 @@ function makeOutline(template, episodeCount) {
   }));
 }
 
-export function generateVersion({ brief, params, source = "AI生成" }) {
-  const template = getTemplate(brief.templateId);
+export function generateVersion({ brief, params, source = "AI生成", templateCatalog = templates }) {
+  const template = getTemplate(brief.templateId, templateCatalog);
   const market = getMarket(brief.market);
   const parameters = mergeParams(template, params);
   const episodeCount = clamp(Number(brief.episodeCount || 24), 12, 40);
@@ -187,18 +187,18 @@ export function generateVersion({ brief, params, source = "AI生成" }) {
   };
 }
 
-export function createProject({ brief, params }) {
-  const version = generateVersion({ brief, params });
+export function createProject({ brief, params, templateCatalog = templates }) {
+  const version = generateVersion({ brief, params, templateCatalog });
   return createProjectFromVersion({ brief, version });
 }
 
-export function normalizeAiVersion({ brief, params, payload, usage, model, source = "DeepSeek", requestId, costUsd }) {
-  const template = getTemplate(brief.templateId);
+export function normalizeAiVersion({ brief, params, payload, usage, model, source = "DeepSeek", requestId, costUsd, templateCatalog = templates }) {
+  const template = getTemplate(brief.templateId, templateCatalog);
   const market = getMarket(brief.market);
   const parameters = mergeParams(template, params);
   const safeArray = (value, fallback = []) => (Array.isArray(value) && value.length ? value : fallback);
   const safeText = (value, fallback = "") => (typeof value === "string" && value.trim() ? value.trim() : fallback);
-  const localFallback = generateVersion({ brief, params, source: "本地兜底" });
+  const localFallback = generateVersion({ brief, params, source: "本地兜底", templateCatalog });
 
   const version = {
     id: uid("ver"),
@@ -288,13 +288,14 @@ export function buildRewriteParams(activeParams, instruction = "") {
   };
 }
 
-export function rewriteVersion(project, instruction) {
+export function rewriteVersion(project, instruction, templateCatalog = templates) {
   const active = project.versions.find((version) => version.id === project.activeVersionId) || project.versions[0];
   const nextParams = buildRewriteParams(active.parameters, instruction);
   const next = generateVersion({
     brief: project.brief,
     params: nextParams,
     source: instruction || "段落重写",
+    templateCatalog,
   });
   next.name = `${instruction || "重写版本"} ${project.versions.length + 1}`;
   return {

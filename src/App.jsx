@@ -68,6 +68,7 @@ export default function App() {
   const [aiLogState, setAiLogState] = useState({ logs: [], totals: { count: 0, success: 0, tokens: 0, costUsd: 0 } });
   const serverReadyRef = useRef(false);
   const saveTimerRef = useRef(null);
+  const backupInputRef = useRef(null);
 
   useEffect(() => {
     saveWorkspace(workspace);
@@ -121,6 +122,21 @@ export default function App() {
     return activeProject.versions.find((version) => version.id === compareVersionId) || activeProject.versions[1] || null;
   }, [activeProject, compareVersionId]);
 
+  const templateCatalog = useMemo(() => {
+    const customTemplates = workspace.customTemplates || [];
+    return [...templates, ...customTemplates].sort((a, b) => {
+      const aType = templateTypes.includes(a.type) ? templateTypes.indexOf(a.type) : templateTypes.length;
+      const bType = templateTypes.includes(b.type) ? templateTypes.indexOf(b.type) : templateTypes.length;
+      if (aType !== bType) return aType - bType;
+      return Number(a.heatRank || 999) - Number(b.heatRank || 999);
+    });
+  }, [workspace.customTemplates]);
+
+  const typeGroups = useMemo(() => {
+    const customTypes = templateCatalog.map((template) => template.type).filter((type) => type && !templateTypes.includes(type));
+    return [...templateTypes, ...Array.from(new Set(customTypes))];
+  }, [templateCatalog]);
+
   function patchWorkspaceProject(projectId, patcher) {
     setWorkspace((current) => ({
       ...current,
@@ -140,7 +156,7 @@ export default function App() {
   }
 
   function handleTemplateChange(templateId) {
-    const template = getTemplate(templateId);
+    const template = getTemplate(templateId, templateCatalog);
     setDraftBrief((brief) => ({ ...brief, templateId }));
     setDraftParams(mergeParams(template));
   }
@@ -152,7 +168,7 @@ export default function App() {
     let project;
 
     try {
-      const version = await generateVersionWithDeepSeek({ brief: draftBrief, params: draftParams });
+      const version = await generateVersionWithDeepSeek({ brief: draftBrief, params: draftParams, templateCatalog });
       project = createProjectFromVersion({
         brief: draftBrief,
         version,
@@ -160,7 +176,7 @@ export default function App() {
       });
       setGenerationNotice("DeepSeek 生成完成。");
     } catch (error) {
-      project = createProject({ brief: draftBrief, params: draftParams });
+      project = createProject({ brief: draftBrief, params: draftParams, templateCatalog });
       project.comments = [
         {
           id: uid("comment"),
@@ -190,7 +206,7 @@ export default function App() {
     setGenerationNotice(`正在调用 DeepSeek 执行「${instruction}」...`);
 
     try {
-      const nextVersion = await rewriteVersionWithDeepSeek({ project: activeProject, activeVersion, instruction });
+      const nextVersion = await rewriteVersionWithDeepSeek({ project: activeProject, activeVersion, instruction, templateCatalog });
       patchWorkspaceProject(activeProject.id, (project) => ({
         ...project,
         activeVersionId: nextVersion.id,
@@ -210,7 +226,7 @@ export default function App() {
       setGenerationNotice(`DeepSeek 已完成「${instruction}」。`);
     } catch (error) {
       patchWorkspaceProject(activeProject.id, (project) => {
-        const rewritten = rewriteVersion(project, instruction);
+        const rewritten = rewriteVersion(project, instruction, templateCatalog);
         return {
           ...rewritten,
           comments: [
@@ -268,6 +284,51 @@ export default function App() {
   function selectProject(projectId) {
     setWorkspace((current) => ({ ...current, activeProjectId: projectId }));
     setCompareVersionId("");
+  }
+
+  function deleteActiveProject() {
+    if (!activeProject) return;
+    if (!window.confirm(`确认删除项目「${activeProject.name}」？该操作会从当前工作区移除项目和所有版本。`)) return;
+    setWorkspace((current) => {
+      const remaining = current.projects.filter((project) => project.id !== activeProject.id);
+      return {
+        ...current,
+        projects: remaining,
+        activeProjectId: remaining[0]?.id || "",
+      };
+    });
+    setCompareVersionId("");
+  }
+
+  function exportWorkspaceBackup() {
+    const blob = new Blob([JSON.stringify(workspace, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `djcytools-workspace-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function importWorkspaceBackup(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result || ""));
+        if (!Array.isArray(parsed.projects) || !parsed.team) throw new Error("备份文件结构不正确");
+        setWorkspace({
+          ...parsed,
+          customTemplates: Array.isArray(parsed.customTemplates) ? parsed.customTemplates : [],
+        });
+        setStorageStatus("已从备份恢复，正在同步服务端");
+      } catch (error) {
+        setStorageStatus(`备份恢复失败：${error instanceof Error ? error.message : "未知错误"}`);
+      }
+    };
+    reader.readAsText(file, "utf-8");
   }
 
   const stats = {
@@ -355,6 +416,10 @@ export default function App() {
                 {status}
               </button>
             ))}
+            <button className="segmented danger" type="button" onClick={deleteActiveProject} disabled={!activeProject || workspace.projects.length <= 1}>
+              <Trash2 size={14} />
+              删除项目
+            </button>
           </div>
         </header>
 
@@ -379,9 +444,9 @@ export default function App() {
               <label>
                 模板
                 <select value={draftBrief.templateId} onChange={(event) => handleTemplateChange(event.target.value)}>
-                  {templateTypes.map((type) => (
+                  {typeGroups.map((type) => (
                     <optgroup label={type} key={type}>
-                      {templates
+                      {templateCatalog
                         .filter((template) => template.type === type)
                         .map((template) => (
                           <option value={template.id} key={template.id}>
@@ -495,6 +560,19 @@ export default function App() {
             </section>
 
             <section className="panel">
+              <PanelHeader icon={ScrollText} eyebrow="TEMPLATES" title="模板库管理" />
+              <TemplateManager
+                workspace={workspace}
+                setWorkspace={setWorkspace}
+                templateCatalog={templateCatalog}
+                typeGroups={typeGroups}
+                draftBrief={draftBrief}
+                setDraftBrief={setDraftBrief}
+                setDraftParams={setDraftParams}
+              />
+            </section>
+
+            <section className="panel">
               <PanelHeader icon={Users} eyebrow="TEAM" title="团队权限" />
               <TeamPanel workspace={workspace} setWorkspace={setWorkspace} />
             </section>
@@ -515,7 +593,13 @@ export default function App() {
 
             <section className="panel">
               <PanelHeader icon={Target} eyebrow="OPS" title="运行状态" />
-              <OpsPanel storageStatus={storageStatus} aiLogState={aiLogState} />
+              <OpsPanel
+                storageStatus={storageStatus}
+                aiLogState={aiLogState}
+                exportWorkspaceBackup={exportWorkspaceBackup}
+                importWorkspaceBackup={importWorkspaceBackup}
+                backupInputRef={backupInputRef}
+              />
             </section>
           </aside>
         </div>
@@ -950,7 +1034,173 @@ function TeamPanel({ workspace, setWorkspace }) {
   );
 }
 
-function OpsPanel({ storageStatus, aiLogState }) {
+function TemplateManager({ workspace, setWorkspace, templateCatalog, typeGroups, draftBrief, setDraftBrief, setDraftParams }) {
+  const selectedTemplate = getTemplate(draftBrief.templateId, templateCatalog);
+  const [draftTemplate, setDraftTemplate] = useState(() => createTemplateDraft(selectedTemplate));
+  const customTemplates = workspace.customTemplates || [];
+
+  function createTemplateDraft(template) {
+    return {
+      id: "",
+      name: `${template.name} 改版`,
+      type: template.type || "自定义",
+      tags: (template.tags || []).join("、"),
+      premise: template.premise || "",
+      lead: template.lead || "",
+      rival: template.rival || "",
+      hook: template.hook || "",
+      beat: template.beat || "",
+      heatScore: 70,
+      defaultParams: template.defaultParams || selectedTemplate.defaultParams,
+    };
+  }
+
+  function resetFromSelected() {
+    setDraftTemplate(createTemplateDraft(selectedTemplate));
+  }
+
+  function saveCustomTemplate() {
+    const nextTemplate = {
+      id: draftTemplate.id || `custom-${uid("tpl")}`,
+      name: draftTemplate.name.trim() || "未命名自定义模板",
+      type: draftTemplate.type.trim() || "自定义",
+      category: draftTemplate.type.trim() || "自定义",
+      heatRank: draftTemplate.id ? draftTemplate.heatRank || 900 : 900 + customTemplates.length + 1,
+      heatScore: Number(draftTemplate.heatScore || 70),
+      tags: draftTemplate.tags
+        .split(/[、,，]/)
+        .map((tag) => tag.trim())
+        .filter(Boolean),
+      premise: draftTemplate.premise,
+      lead: draftTemplate.lead,
+      rival: draftTemplate.rival,
+      hook: draftTemplate.hook,
+      beat: draftTemplate.beat,
+      defaultParams: draftTemplate.defaultParams || selectedTemplate.defaultParams,
+      isCustom: true,
+    };
+
+    setWorkspace((current) => {
+      const existing = current.customTemplates || [];
+      const nextCustomTemplates = existing.some((template) => template.id === nextTemplate.id)
+        ? existing.map((template) => (template.id === nextTemplate.id ? nextTemplate : template))
+        : [nextTemplate, ...existing];
+      return {
+        ...current,
+        customTemplates: nextCustomTemplates,
+      };
+    });
+    setDraftTemplate(createTemplateDraft(nextTemplate));
+    setDraftBrief((brief) => ({ ...brief, templateId: nextTemplate.id }));
+    setDraftParams(nextTemplate.defaultParams);
+  }
+
+  function editCustomTemplate(template) {
+    setDraftTemplate({
+      ...template,
+      tags: (template.tags || []).join("、"),
+    });
+  }
+
+  function deleteCustomTemplate(templateId) {
+    setWorkspace((current) => ({
+      ...current,
+      customTemplates: (current.customTemplates || []).filter((template) => template.id !== templateId),
+    }));
+    if (draftBrief.templateId === templateId) {
+      setDraftBrief((brief) => ({ ...brief, templateId: templates[0].id }));
+      setDraftParams(templates[0].defaultParams);
+    }
+  }
+
+  return (
+    <div className="template-manager">
+      <div className="template-manager-head">
+        <div>
+          <strong>{templateCatalog.length}</strong>
+          <span>可用模板</span>
+        </div>
+        <div>
+          <strong>{customTemplates.length}</strong>
+          <span>团队自定义</span>
+        </div>
+      </div>
+
+      <div className="template-form">
+        <div className="two-col">
+          <label>
+            模板名
+            <input
+              value={draftTemplate.name}
+              onChange={(event) => setDraftTemplate({ ...draftTemplate, name: event.target.value })}
+            />
+          </label>
+          <label>
+            类型
+            <input
+              list="template-type-options"
+              value={draftTemplate.type}
+              onChange={(event) => setDraftTemplate({ ...draftTemplate, type: event.target.value })}
+            />
+            <datalist id="template-type-options">
+              {typeGroups.map((type) => (
+                <option key={type} value={type} />
+              ))}
+              <option value="自定义" />
+            </datalist>
+          </label>
+        </div>
+        <label>
+          标签
+          <input value={draftTemplate.tags} onChange={(event) => setDraftTemplate({ ...draftTemplate, tags: event.target.value })} />
+        </label>
+        <label>
+          钩子
+          <textarea rows={2} value={draftTemplate.hook} onChange={(event) => setDraftTemplate({ ...draftTemplate, hook: event.target.value })} />
+        </label>
+        <label>
+          模板主线
+          <textarea rows={2} value={draftTemplate.beat} onChange={(event) => setDraftTemplate({ ...draftTemplate, beat: event.target.value })} />
+        </label>
+        <div className="two-col">
+          <label>
+            主角
+            <input value={draftTemplate.lead} onChange={(event) => setDraftTemplate({ ...draftTemplate, lead: event.target.value })} />
+          </label>
+          <label>
+            对手
+            <input value={draftTemplate.rival} onChange={(event) => setDraftTemplate({ ...draftTemplate, rival: event.target.value })} />
+          </label>
+        </div>
+        <div className="template-actions">
+          <button className="secondary-action" type="button" onClick={resetFromSelected}>
+            复制当前模板
+          </button>
+          <button className="secondary-action strong" type="button" onClick={saveCustomTemplate}>
+            保存为团队模板
+          </button>
+        </div>
+      </div>
+
+      <div className="custom-template-list">
+        {customTemplates.map((template) => (
+          <div className="custom-template-row" key={template.id}>
+            <button type="button" onClick={() => editCustomTemplate(template)}>
+              <b>{template.name}</b>
+              <span>{template.type} · {template.tags?.slice(0, 3).join(" / ")}</span>
+            </button>
+            <button type="button" onClick={() => deleteCustomTemplate(template.id)} title="删除自定义模板">
+              <Trash2 size={15} />
+            </button>
+          </div>
+        ))}
+        {customTemplates.length === 0 && <p className="muted-note">还没有团队自定义模板。可以复制当前模板后改写并保存。</p>}
+      </div>
+    </div>
+  );
+}
+
+function OpsPanel({ storageStatus, aiLogState, exportWorkspaceBackup, importWorkspaceBackup, backupInputRef }) {
   const totals = aiLogState.totals || { count: 0, success: 0, tokens: 0, costUsd: 0 };
   return (
     <div className="ops-panel">
@@ -970,6 +1220,23 @@ function OpsPanel({ storageStatus, aiLogState }) {
           </p>
         ))}
         {(!aiLogState.logs || aiLogState.logs.length === 0) && <p>暂无 AI 调用日志。</p>}
+      </div>
+      <div className="backup-actions">
+        <button className="secondary-action" type="button" onClick={exportWorkspaceBackup}>
+          <Download size={15} />
+          导出工作区
+        </button>
+        <button className="secondary-action" type="button" onClick={() => backupInputRef.current?.click()}>
+          <Archive size={15} />
+          恢复备份
+        </button>
+        <input
+          ref={backupInputRef}
+          type="file"
+          accept="application/json"
+          hidden
+          onChange={(event) => importWorkspaceBackup(event.target.files?.[0])}
+        />
       </div>
     </div>
   );

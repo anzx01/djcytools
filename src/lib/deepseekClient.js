@@ -1,13 +1,13 @@
 import { buildRewriteParams, getMarket, getTemplate, normalizeAiVersion } from "./generator.js";
 
-export async function generateVersionWithDeepSeek({ brief, params }) {
+export async function generateVersionWithDeepSeek({ brief, params, templateCatalog }) {
   const response = await fetch("/api/generate-script", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       brief,
       params,
-      template: getTemplate(brief.templateId),
+      template: getTemplate(brief.templateId, templateCatalog),
       market: getMarket(brief.market),
     }),
   });
@@ -26,10 +26,11 @@ export async function generateVersionWithDeepSeek({ brief, params }) {
     source: "DeepSeek",
     requestId: data.requestId,
     costUsd: data.costUsd,
+    templateCatalog,
   });
 }
 
-export async function rewriteVersionWithDeepSeek({ project, activeVersion, instruction }) {
+export async function rewriteVersionWithDeepSeek({ project, activeVersion, instruction, templateCatalog }) {
   const nextParams = buildRewriteParams(activeVersion.parameters, instruction);
   const response = await fetch("/api/generate-script", {
     method: "POST",
@@ -37,7 +38,7 @@ export async function rewriteVersionWithDeepSeek({ project, activeVersion, instr
     body: JSON.stringify({
       brief: project.brief,
       params: nextParams,
-      template: getTemplate(project.brief.templateId),
+      template: getTemplate(project.brief.templateId, templateCatalog),
       market: getMarket(project.brief.market),
       instruction,
       currentVersion: {
@@ -65,6 +66,7 @@ export async function rewriteVersionWithDeepSeek({ project, activeVersion, instr
     source: "DeepSeek改写",
     requestId: data.requestId,
     costUsd: data.costUsd,
+    templateCatalog,
   });
   version.name = `${instruction || "DeepSeek改写"} ${new Date().toLocaleTimeString("zh-CN", {
     hour: "2-digit",

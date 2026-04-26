@@ -793,6 +793,12 @@ label {
   background: var(--green);
 }
 
+.segmented.danger {
+  color: var(--red);
+  border-color: rgba(180, 61, 47, 0.22);
+  background: rgba(180, 61, 47, 0.07);
+}
+
 .bench-grid {
   display: grid;
   grid-template-columns: minmax(290px, 340px) minmax(460px, 1fr) minmax(330px, 390px);
@@ -1227,6 +1233,103 @@ input[type="range"] {
   color: var(--ink);
   border: 1px solid var(--line);
   background: rgba(255, 250, 240, 0.86);
+}
+
+.secondary-action.strong {
+  color: #fff8ec;
+  border-color: var(--green);
+  background: var(--green);
+}
+
+.template-manager {
+  display: grid;
+  gap: 12px;
+}
+
+.template-manager-head {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.template-manager-head div {
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 250, 240, 0.66);
+}
+
+.template-manager-head strong {
+  font-size: 24px;
+}
+
+.template-manager-head span,
+.muted-note {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.template-form {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  background: rgba(236, 226, 208, 0.3);
+}
+
+.template-actions,
+.backup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.custom-template-list {
+  display: grid;
+  gap: 8px;
+}
+
+.custom-template-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  gap: 7px;
+}
+
+.custom-template-row > button:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px;
+  color: var(--ink);
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 250, 240, 0.66);
+}
+
+.custom-template-row > button:first-child span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.custom-template-row > button:last-child {
+  display: grid;
+  place-items: center;
+  color: var(--red);
+  border: 1px solid rgba(180, 61, 47, 0.22);
+  border-radius: 7px;
+  background: rgba(180, 61, 47, 0.07);
+}
+
+.muted-note {
+  margin: 0;
+  line-height: 1.5;
 }
 
 .team-panel {

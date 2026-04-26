@@ -26,5 +26,6 @@ export function createSeedWorkspace() {
       persistence: "server-json",
       language: "zh-CN",
     },
+    customTemplates: [],
   };
 }
