@@ -251,9 +251,10 @@ export function normalizeAiVersion({ brief, params, payload, usage, model, sourc
 }
 
 export function createProjectFromVersion({ brief, version, notice }) {
+  const shortDramaName = version.selectedTitle || version.titleCandidates?.[0] || brief.title || "未命名短剧";
   return {
     id: uid("proj"),
-    name: brief.title || version.selectedTitle,
+    name: shortDramaName,
     status: "草稿",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   Archive,
@@ -8,9 +8,12 @@ import {
   FileJson,
   FileText,
   Flame,
+  FolderOpen,
   MessageSquare,
   Plus,
   RefreshCcw,
+  Save,
+  Search,
   Trash2,
   X,
 } from "lucide-react";
@@ -64,6 +67,159 @@ export function PanelHeader({ icon: Icon, eyebrow, title }) {
         <p className="eyebrow">{eyebrow}</p>
         <h3>{title}</h3>
       </div>
+    </div>
+  );
+}
+
+export function ProjectManagementPanel({
+  projects,
+  activeProjectId,
+  canEdit,
+  isGenerating,
+  onSelectProject,
+  onCreateDraftProject,
+  onGenerateProject,
+  onUpdateProject,
+  onDeleteProject,
+}) {
+  const statusOptions = ["草稿", "评审中", "已定稿", "已导出", "归档"];
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("全部");
+  const activeProject = useMemo(
+    () => projects.find((project) => project.id === activeProjectId) || projects[0] || null,
+    [activeProjectId, projects],
+  );
+  const [draft, setDraft] = useState({ name: "", status: "草稿" });
+
+  useEffect(() => {
+    if (!activeProject) return;
+    setDraft({ name: activeProject.name || "", status: activeProject.status || "草稿" });
+  }, [activeProject?.id, activeProject?.name, activeProject?.status]);
+
+  const filteredProjects = useMemo(() => {
+    const keyword = query.trim().toLowerCase();
+    return projects.filter((project) => {
+      const matchesKeyword = !keyword || `${project.name} ${project.status}`.toLowerCase().includes(keyword);
+      const matchesStatus = statusFilter === "全部" || project.status === statusFilter;
+      return matchesKeyword && matchesStatus;
+    });
+  }, [projects, query, statusFilter]);
+
+  const hasChanges = Boolean(
+    activeProject && (draft.name.trim() !== activeProject.name || draft.status !== activeProject.status),
+  );
+  const versionCount = activeProject?.versions?.length || 0;
+  const campaignCount = activeProject?.campaignResults?.length || 0;
+  const commentCount = activeProject?.comments?.length || 0;
+
+  function submitProject(event) {
+    event.preventDefault();
+    if (!activeProject || !canEdit || !hasChanges) return;
+    onUpdateProject(activeProject.id, {
+      name: draft.name.trim() || "未命名项目",
+      status: draft.status,
+    });
+  }
+
+  return (
+    <div className="project-management-panel">
+      <div className="project-management-actions">
+        <button className="secondary-action" type="button" onClick={onCreateDraftProject} disabled={!canEdit}>
+          <Plus size={15} />
+          新建草稿
+        </button>
+        <button className="secondary-action strong" type="button" onClick={onGenerateProject} disabled={!canEdit || isGenerating}>
+          <RefreshCcw size={15} />
+          {isGenerating ? "生成中" : "AI 生成"}
+        </button>
+      </div>
+
+      <div className="project-filters">
+        <label className="search-field">
+          <Search size={14} />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索项目" />
+        </label>
+        <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+          <option value="全部">全部状态</option>
+          {statusOptions.map((status) => (
+            <option key={status} value={status}>
+              {status}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="project-manager-list">
+        {filteredProjects.map((project) => (
+          <button
+            key={project.id}
+            type="button"
+            className={project.id === activeProject?.id ? "manager-project-row active" : "manager-project-row"}
+            onClick={() => onSelectProject(project.id)}
+          >
+            <FolderOpen size={15} />
+            <span>
+              <b>{project.name}</b>
+              <small>
+                {project.status} · {project.versions?.length || 0} 版 · {formatDate(project.updatedAt || project.createdAt)}
+              </small>
+            </span>
+          </button>
+        ))}
+        {filteredProjects.length === 0 && <p className="muted-note">没有匹配项目。</p>}
+      </div>
+
+      {activeProject && (
+        <form className="project-detail-form" onSubmit={submitProject}>
+          <div className="project-detail-stats">
+            <div>
+              <span>版本</span>
+              <strong>{versionCount}</strong>
+            </div>
+            <div>
+              <span>投流</span>
+              <strong>{campaignCount}</strong>
+            </div>
+            <div>
+              <span>评论</span>
+              <strong>{commentCount}</strong>
+            </div>
+          </div>
+          <label>
+            项目名
+            <input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} disabled={!canEdit} />
+          </label>
+          <label>
+            项目状态
+            <select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value })} disabled={!canEdit}>
+              {statusOptions.map((status) => (
+                <option key={status} value={status}>
+                  {status}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="project-detail-dates">
+            <span>创建 {formatDate(activeProject.createdAt)}</span>
+            <span>更新 {formatDate(activeProject.updatedAt || activeProject.createdAt)}</span>
+          </div>
+          <div className="project-management-actions">
+            <button className="secondary-action strong" type="submit" disabled={!canEdit || !hasChanges}>
+              <Save size={15} />
+              保存项目
+            </button>
+            <button
+              className="secondary-action danger"
+              type="button"
+              onClick={() => onDeleteProject(activeProject.id)}
+              disabled={!canEdit || projects.length <= 1}
+            >
+              <Trash2 size={15} />
+              删除项目
+            </button>
+          </div>
+        </form>
+      )}
     </div>
   );
 }
@@ -602,10 +758,11 @@ export function DeliveryPanel({ project, commentText, setCommentText, addComment
   );
 }
 
-export function TeamPanel({ workspace, setWorkspace }) {
+export function TeamPanel({ workspace, setWorkspace, canManageTeam = true }) {
   const members = workspace.team?.members || [];
 
   function patchTeam(patcher) {
+    if (!canManageTeam) return;
     setWorkspace((current) => ({
       ...current,
       team: patcher(current.team || { name: "未命名团队", members: [] }),
@@ -613,6 +770,7 @@ export function TeamPanel({ workspace, setWorkspace }) {
   }
 
   function updateMember(index, field, value) {
+    if (!canManageTeam) return;
     patchTeam((team) => ({
       ...team,
       members: team.members.map((member, itemIndex) => (itemIndex === index ? { ...member, [field]: value } : member)),
@@ -620,6 +778,7 @@ export function TeamPanel({ workspace, setWorkspace }) {
   }
 
   function addMember() {
+    if (!canManageTeam) return;
     patchTeam((team) => ({
       ...team,
       members: [...team.members, { name: "新成员", role: "查看者" }],
@@ -627,6 +786,7 @@ export function TeamPanel({ workspace, setWorkspace }) {
   }
 
   function removeMember(index) {
+    if (!canManageTeam) return;
     patchTeam((team) => ({
       ...team,
       members: team.members.filter((_, itemIndex) => itemIndex !== index),
@@ -640,24 +800,26 @@ export function TeamPanel({ workspace, setWorkspace }) {
         <input
           value={workspace.team?.name || ""}
           onChange={(event) => patchTeam((team) => ({ ...team, name: event.target.value }))}
+          disabled={!canManageTeam}
         />
       </label>
       <div className="member-list">
         {members.map((member, index) => (
           <div className="member-row" key={`${member.name}-${index}`}>
-            <input value={member.name} onChange={(event) => updateMember(index, "name", event.target.value)} />
-            <select value={member.role} onChange={(event) => updateMember(index, "role", event.target.value)}>
+            <input value={member.name} onChange={(event) => updateMember(index, "name", event.target.value)} disabled={!canManageTeam} />
+            <select value={member.role} onChange={(event) => updateMember(index, "role", event.target.value)} disabled={!canManageTeam}>
               <option>所有者</option>
               <option>编辑者</option>
               <option>查看者</option>
             </select>
-            <button type="button" onClick={() => removeMember(index)} title="移除成员">
+            <button type="button" onClick={() => removeMember(index)} title="移除成员" disabled={!canManageTeam}>
               <Trash2 size={15} />
             </button>
           </div>
         ))}
       </div>
-      <button className="secondary-action" type="button" onClick={addMember}>
+      {!canManageTeam && <p className="muted-note">只有所有者可以调整团队成员和角色。</p>}
+      <button className="secondary-action" type="button" onClick={addMember} disabled={!canManageTeam}>
         <Plus size={15} />
         添加成员
       </button>

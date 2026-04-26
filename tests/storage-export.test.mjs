@@ -17,6 +17,20 @@ test("normalizeWorkspace repairs old workspace payloads", () => {
   assert.deepEqual(workspace.projects[0].campaignResults, []);
   assert.equal(workspace.team.members.length, 3);
   assert.deepEqual(workspace.customTemplates, []);
+
+  const namedWorkspace = normalizeWorkspace({
+    activeProjectId: "p2",
+    projects: [
+      {
+        id: "p2",
+        name: "新短剧项目",
+        activeVersionId: "v2",
+        versions: [{ id: "v2", selectedTitle: "她离婚后成了收购方" }],
+      },
+    ],
+    team: { name: "测试团队" },
+  });
+  assert.equal(namedWorkspace.projects[0].name, "她离婚后成了收购方");
 });
 
 test("calculateCampaignMetrics derives CTR, completion, CPA and ROAS", () => {

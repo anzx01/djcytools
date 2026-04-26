@@ -1,16 +1,33 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import crypto from "node:crypto";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { createSeedWorkspace } from "../src/lib/workspaceSeed.js";
-import { normalizeWorkspace } from "../src/lib/storage.js";
+import {
+  appendAiLogToDatabase,
+  canRole,
+  createProjectInDatabase,
+  createSession,
+  deleteProjectFromDatabase,
+  destroySession,
+  getProjectFromDatabase,
+  listProjectsFromDatabase,
+  readAiLogsFromDatabase,
+  readAnalyticsSummaryFromDatabase,
+  readSession,
+  readWorkspaceFromDatabase,
+  registerUser,
+  recordAnalyticsEventToDatabase,
+  writeWorkspaceToDatabase,
+  updateProjectInDatabase,
+} from "./database.mjs";
 
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_AI_TIMEOUT_MS = 70_000;
 const DEFAULT_RATE_LIMIT_WINDOW_MS = 60_000;
 const DEFAULT_RATE_LIMIT_MAX = 80;
 const rateBuckets = new Map();
 const analyticsWriteQueues = new Map();
 const trackedAnalyticsPages = ["landing", "workbench"];
+const SESSION_COOKIE = "djcytools_session";
 
 function createHttpError(statusCode, message, code = "BAD_REQUEST") {
   const error = new Error(message);
@@ -19,13 +36,18 @@ function createHttpError(statusCode, message, code = "BAD_REQUEST") {
   return error;
 }
 
-function readRequestBody(req, { maxBytes = DEFAULT_MAX_BODY_BYTES } = {}) {
+function readRequestBody(req, { maxBytes = DEFAULT_MAX_BODY_BYTES, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
     let raw = "";
     let received = 0;
+    const timeout = setTimeout(() => {
+      reject(createHttpError(408, "请求读取超时，请重试。", "REQUEST_TIMEOUT"));
+      req.destroy();
+    }, timeoutMs);
     req.on("data", (chunk) => {
       received += chunk.length;
       if (received > maxBytes) {
+        clearTimeout(timeout);
         reject(createHttpError(413, "请求体过大，请缩小工作区或使用备份文件导入。", "PAYLOAD_TOO_LARGE"));
         req.destroy();
         return;
@@ -33,13 +55,17 @@ function readRequestBody(req, { maxBytes = DEFAULT_MAX_BODY_BYTES } = {}) {
       raw += chunk;
     });
     req.on("end", () => {
+      clearTimeout(timeout);
       try {
         resolve(raw ? JSON.parse(raw) : {});
       } catch (error) {
         reject(createHttpError(400, "请求 JSON 格式不正确。", "INVALID_JSON"));
       }
     });
-    req.on("error", reject);
+    req.on("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
   });
 }
 
@@ -51,6 +77,53 @@ function sendJson(res, statusCode, data, headers = {}) {
     res.setHeader(key, value);
   }
   res.end(JSON.stringify(data));
+}
+
+function parseCookies(cookieHeader = "") {
+  return Object.fromEntries(
+    cookieHeader
+      .split(";")
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((item) => {
+        const index = item.indexOf("=");
+        if (index === -1) return [item, ""];
+        return [decodeURIComponent(item.slice(0, index)), decodeURIComponent(item.slice(index + 1))];
+      }),
+  );
+}
+
+function getSessionToken(req) {
+  return parseCookies(req.headers.cookie || "")[SESSION_COOKIE] || "";
+}
+
+function setSessionCookie(res, token, expiresAt) {
+  const maxAge = Math.max(0, Math.floor((new Date(expiresAt).getTime() - Date.now()) / 1000));
+  res.setHeader("Set-Cookie", `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAge}`);
+}
+
+function clearSessionCookie(res) {
+  res.setHeader("Set-Cookie", `${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`);
+}
+
+function authPayload(session) {
+  return {
+    authenticated: true,
+    user: session.user,
+    team: session.team,
+    membership: session.membership,
+    expiresAt: session.expiresAt,
+  };
+}
+
+function sendAuthRequired(res) {
+  sendJson(res, 401, { error: "请先登录后再访问工作台接口。", code: "AUTH_REQUIRED" });
+}
+
+function ensureRole(res, session, requiredRole) {
+  if (canRole(session.membership.role, requiredRole)) return true;
+  sendJson(res, 403, { error: "当前角色没有执行该操作的权限。", code: "FORBIDDEN", requiredRole });
+  return false;
 }
 
 function getClientKey(req) {
@@ -87,54 +160,16 @@ function applyRateLimit(req, res, env) {
   return false;
 }
 
-function getDataPaths(rootDir) {
-  const dataDir = path.join(rootDir, "data");
-  return {
-    dataDir,
-    workspaceFile: path.join(dataDir, "workspace.json"),
-    logsFile: path.join(dataDir, "ai-logs.json"),
-    analyticsFile: path.join(dataDir, "analytics.json"),
-  };
+async function readWorkspace(rootDir, env, session) {
+  return readWorkspaceFromDatabase(rootDir, env, session);
 }
 
-async function readJson(filePath, fallback) {
-  try {
-    const raw = await readFile(filePath, "utf8");
-    return JSON.parse(raw);
-  } catch {
-    return fallback;
-  }
+async function writeWorkspace(rootDir, env, session, workspace) {
+  return writeWorkspaceToDatabase(rootDir, env, session, workspace);
 }
 
-async function writeJson(filePath, value) {
-  await mkdir(path.dirname(filePath), { recursive: true });
-  const tempPath = `${filePath}.tmp`;
-  await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  await rename(tempPath, filePath);
-}
-
-async function readWorkspace(rootDir) {
-  const { workspaceFile } = getDataPaths(rootDir);
-  const workspace = await readJson(workspaceFile, null);
-  if (workspace) return normalizeWorkspace(workspace);
-  const seed = createSeedWorkspace();
-  await writeJson(workspaceFile, seed);
-  return seed;
-}
-
-async function writeWorkspace(rootDir, workspace) {
-  const { workspaceFile } = getDataPaths(rootDir);
-  await writeJson(workspaceFile, {
-    ...normalizeWorkspace(workspace),
-    savedAt: new Date().toISOString(),
-  });
-}
-
-async function appendAiLog(rootDir, logItem) {
-  const { logsFile } = getDataPaths(rootDir);
-  const logs = await readJson(logsFile, []);
-  const nextLogs = [logItem, ...logs].slice(0, 300);
-  await writeJson(logsFile, nextLogs);
+async function appendAiLog(rootDir, logItem, env = {}, session = null) {
+  appendAiLogToDatabase(rootDir, env, logItem, session);
 }
 
 function createEmptyAnalyticsPage() {
@@ -190,13 +225,6 @@ export function normalizeAnalyticsStore(value) {
   return store;
 }
 
-function hashVisitorId(visitorId) {
-  if (typeof visitorId !== "string") return "";
-  const normalized = visitorId.trim().slice(0, 128);
-  if (normalized.length < 8) return "";
-  return crypto.createHash("sha256").update(normalized).digest("hex").slice(0, 40);
-}
-
 export function buildAnalyticsSummary(storeValue) {
   const store = normalizeAnalyticsStore(storeValue);
   const pages = Object.fromEntries(
@@ -219,44 +247,14 @@ export function buildAnalyticsSummary(storeValue) {
   };
 }
 
-function appendUnique(list, value) {
-  if (value && !list.includes(value)) list.push(value);
+async function recordAnalyticsEventNow(rootDir, event, env = {}) {
+  return recordAnalyticsEventToDatabase(rootDir, env, event);
 }
 
-async function recordAnalyticsEventNow(rootDir, event) {
-  const page = typeof event?.page === "string" ? event.page.trim() : "";
-  if (!trackedAnalyticsPages.includes(page)) {
-    throw createHttpError(400, "不支持的埋点页面", "INVALID_ANALYTICS_PAGE");
-  }
-
-  const { analyticsFile } = getDataPaths(rootDir);
-  const store = normalizeAnalyticsStore(await readJson(analyticsFile, null));
-  const createdAt = new Date().toISOString();
-  const visitorHash = hashVisitorId(event.visitorId);
-  const pageData = store.pages[page];
-
-  pageData.pageViews += 1;
-  pageData.lastVisitedAt = createdAt;
-  appendUnique(pageData.visitorHashes, visitorHash);
-  appendUnique(store.visitorHashes, visitorHash);
-
-  store.recentEvents = [
-    {
-      id: `pv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
-      page,
-      createdAt,
-    },
-    ...store.recentEvents,
-  ].slice(0, 200);
-
-  await writeJson(analyticsFile, store);
-  return buildAnalyticsSummary(store);
-}
-
-export async function recordAnalyticsEvent(rootDir, event) {
+export async function recordAnalyticsEvent(rootDir, event, env = {}) {
   const queueKey = path.resolve(rootDir);
   const previous = analyticsWriteQueues.get(queueKey) || Promise.resolve();
-  const next = previous.catch(() => {}).then(() => recordAnalyticsEventNow(rootDir, event));
+  const next = previous.catch(() => {}).then(() => recordAnalyticsEventNow(rootDir, event, env));
   analyticsWriteQueues.set(queueKey, next);
   try {
     return await next;
@@ -265,9 +263,8 @@ export async function recordAnalyticsEvent(rootDir, event) {
   }
 }
 
-async function readAnalyticsSummary(rootDir) {
-  const { analyticsFile } = getDataPaths(rootDir);
-  return buildAnalyticsSummary(await readJson(analyticsFile, null));
+async function readAnalyticsSummary(rootDir, env = {}) {
+  return readAnalyticsSummaryFromDatabase(rootDir, env);
 }
 
 function estimateCost(usage = {}) {
@@ -311,7 +308,7 @@ function buildPrompt({ brief, params, template, market, instruction, currentVers
   ].join("\n");
 }
 
-async function handleGenerateScript({ req, res, env, rootDir }) {
+async function handleGenerateScript({ req, res, env, rootDir, session }) {
   const apiKey = env.DEEPSEEK_API_KEY;
   if (!apiKey) {
     sendJson(res, 500, { error: "DEEPSEEK_API_KEY is not configured", code: "AI_KEY_MISSING" });
@@ -319,7 +316,10 @@ async function handleGenerateScript({ req, res, env, rootDir }) {
   }
 
   const startedAt = Date.now();
-  const body = await readRequestBody(req, { maxBytes: Number(env.DJCYTOOLS_MAX_BODY_BYTES || DEFAULT_MAX_BODY_BYTES) });
+  const body = await readRequestBody(req, {
+    maxBytes: Number(env.DJCYTOOLS_MAX_BODY_BYTES || DEFAULT_MAX_BODY_BYTES),
+    timeoutMs: Number(env.DJCYTOOLS_REQUEST_TIMEOUT_MS || DEFAULT_REQUEST_TIMEOUT_MS),
+  });
   const prompt = buildPrompt(body);
   const model = env.DEEPSEEK_MODEL || "deepseek-v4-flash";
   const requestId = `ai_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -362,7 +362,7 @@ async function handleGenerateScript({ req, res, env, rootDir }) {
         error: data?.error?.message || "DeepSeek request failed",
         durationMs: Date.now() - startedAt,
         createdAt: new Date().toISOString(),
-      });
+      }, env, session);
       sendJson(res, response.status, {
         error: data?.error?.message || "DeepSeek request failed",
         code: "AI_PROVIDER_ERROR",
@@ -390,7 +390,7 @@ async function handleGenerateScript({ req, res, env, rootDir }) {
         error: "DeepSeek returned non-JSON content",
         durationMs: Date.now() - startedAt,
         createdAt: new Date().toISOString(),
-      });
+      }, env, session);
       sendJson(res, 502, {
         error: "DeepSeek 返回内容不是合法 JSON，已触发前端本地兜底。",
         code: "AI_INVALID_JSON",
@@ -412,7 +412,7 @@ async function handleGenerateScript({ req, res, env, rootDir }) {
       costUsd,
       durationMs: Date.now() - startedAt,
       createdAt: new Date().toISOString(),
-    });
+    }, env, session);
 
     sendJson(res, 200, {
       requestId,
@@ -432,7 +432,7 @@ async function handleGenerateScript({ req, res, env, rootDir }) {
       error: error instanceof Error ? error.message : "Unknown DeepSeek API error",
       durationMs: Date.now() - startedAt,
       createdAt: new Date().toISOString(),
-    });
+    }, env, session);
     const isAbort = error?.name === "AbortError";
     sendJson(res, isAbort ? 504 : 500, {
       error: isAbort ? "DeepSeek 请求超时，请稍后重试。" : error instanceof Error ? error.message : "Unknown DeepSeek API error",
@@ -447,6 +447,7 @@ export async function handleApiRequest({ req, res, env, rootDir = process.cwd() 
   const url = new URL(req.url || "/", "http://localhost");
   const pathname = url.pathname;
   const maxBytes = Number(env.DJCYTOOLS_MAX_BODY_BYTES || DEFAULT_MAX_BODY_BYTES);
+  const requestTimeoutMs = Number(env.DJCYTOOLS_REQUEST_TIMEOUT_MS || DEFAULT_REQUEST_TIMEOUT_MS);
 
   if (["POST", "PUT", "PATCH", "DELETE"].includes(req.method || "") && applyRateLimit(req, res, env)) {
     return true;
@@ -458,58 +459,127 @@ export async function handleApiRequest({ req, res, env, rootDir = process.cwd() 
       time: new Date().toISOString(),
       aiConfigured: Boolean(env.DEEPSEEK_API_KEY),
       model: env.DEEPSEEK_MODEL || "deepseek-v4-flash",
-      storage: "server-json",
+      storage: "sqlite",
     });
     return true;
   }
 
-  if (pathname === "/api/workspace" && req.method === "GET") {
-    sendJson(res, 200, { workspace: await readWorkspace(rootDir) });
+  if (pathname === "/api/auth/session" && req.method === "GET") {
+    const session = readSession(rootDir, env, getSessionToken(req));
+    sendJson(res, 200, session ? authPayload(session) : { authenticated: false });
     return true;
   }
 
-  if (pathname === "/api/workspace" && (req.method === "PUT" || req.method === "POST")) {
-    const body = await readRequestBody(req, { maxBytes });
-    const workspace = body.workspace || body;
-    await writeWorkspace(rootDir, workspace);
-    sendJson(res, 200, { ok: true, savedAt: new Date().toISOString() });
+  if (pathname === "/api/auth/login" && req.method === "POST") {
+    const body = await readRequestBody(req, { maxBytes: Math.min(maxBytes, 16 * 1024), timeoutMs: requestTimeoutMs });
+    const session = createSession(rootDir, env, body.email, body.password);
+    setSessionCookie(res, session.token, session.expiresAt);
+    sendJson(res, 200, authPayload(session));
     return true;
   }
 
-  if (pathname === "/api/ai-logs" && req.method === "GET") {
-    const { logsFile } = getDataPaths(rootDir);
-    const logs = await readJson(logsFile, []);
-    const totals = logs.reduce(
-      (acc, item) => {
-        acc.count += 1;
-        acc.success += item.status === "success" ? 1 : 0;
-        acc.tokens += Number(item.usage?.total_tokens || 0);
-        acc.costUsd += Number(item.costUsd || 0);
-        return acc;
-      },
-      { count: 0, success: 0, tokens: 0, costUsd: 0 },
-    );
-    sendJson(res, 200, { logs, totals: { ...totals, costUsd: Number(totals.costUsd.toFixed(6)) } });
+  if (pathname === "/api/auth/register" && req.method === "POST") {
+    const body = await readRequestBody(req, { maxBytes: Math.min(maxBytes, 16 * 1024), timeoutMs: requestTimeoutMs });
+    const session = registerUser(rootDir, env, {
+      email: body.email,
+      password: body.password,
+      name: body.name,
+      teamName: body.teamName,
+    });
+    setSessionCookie(res, session.token, session.expiresAt);
+    sendJson(res, 201, authPayload(session));
     return true;
   }
 
-  if (pathname === "/api/analytics/summary" && req.method === "GET") {
-    sendJson(res, 200, await readAnalyticsSummary(rootDir));
+  if (pathname === "/api/auth/logout" && req.method === "POST") {
+    destroySession(rootDir, env, getSessionToken(req));
+    clearSessionCookie(res);
+    sendJson(res, 200, { ok: true });
     return true;
   }
 
   if (pathname === "/api/analytics/event" && req.method === "POST") {
-    const body = await readRequestBody(req, { maxBytes: Math.min(maxBytes, 16 * 1024) });
+    const body = await readRequestBody(req, { maxBytes: Math.min(maxBytes, 16 * 1024), timeoutMs: requestTimeoutMs });
     const summary = await recordAnalyticsEvent(rootDir, {
       page: body.page,
       visitorId: body.visitorId,
-    });
+    }, env);
     sendJson(res, 200, { ok: true, summary });
     return true;
   }
 
+  const session = readSession(rootDir, env, getSessionToken(req));
+  if (!session) {
+    sendAuthRequired(res);
+    return true;
+  }
+
+  if (pathname === "/api/workspace" && req.method === "GET") {
+    if (!ensureRole(res, session, "viewer")) return true;
+    sendJson(res, 200, { workspace: await readWorkspace(rootDir, env, session) });
+    return true;
+  }
+
+  if (pathname === "/api/workspace" && (req.method === "PUT" || req.method === "POST")) {
+    if (!ensureRole(res, session, "editor")) return true;
+    const body = await readRequestBody(req, { maxBytes, timeoutMs: requestTimeoutMs });
+    const workspace = body.workspace || body;
+    await writeWorkspace(rootDir, env, session, workspace);
+    sendJson(res, 200, { ok: true, savedAt: new Date().toISOString() });
+    return true;
+  }
+
+  if (pathname === "/api/projects" && req.method === "GET") {
+    if (!ensureRole(res, session, "viewer")) return true;
+    sendJson(res, 200, { projects: listProjectsFromDatabase(rootDir, env, session) });
+    return true;
+  }
+
+  if (pathname === "/api/projects" && req.method === "POST") {
+    if (!ensureRole(res, session, "editor")) return true;
+    const body = await readRequestBody(req, { maxBytes, timeoutMs: requestTimeoutMs });
+    const project = createProjectInDatabase(rootDir, env, session, body.project || body);
+    sendJson(res, 201, { project, savedAt: new Date().toISOString() });
+    return true;
+  }
+
+  const projectMatch = pathname.match(/^\/api\/projects\/([^/]+)$/);
+  if (projectMatch && req.method === "GET") {
+    if (!ensureRole(res, session, "viewer")) return true;
+    sendJson(res, 200, { project: getProjectFromDatabase(rootDir, env, session, decodeURIComponent(projectMatch[1])) });
+    return true;
+  }
+
+  if (projectMatch && req.method === "PATCH") {
+    if (!ensureRole(res, session, "editor")) return true;
+    const body = await readRequestBody(req, { maxBytes, timeoutMs: requestTimeoutMs });
+    const project = updateProjectInDatabase(rootDir, env, session, decodeURIComponent(projectMatch[1]), body);
+    sendJson(res, 200, { project, savedAt: new Date().toISOString() });
+    return true;
+  }
+
+  if (projectMatch && req.method === "DELETE") {
+    if (!ensureRole(res, session, "editor")) return true;
+    const workspace = deleteProjectFromDatabase(rootDir, env, session, decodeURIComponent(projectMatch[1]));
+    sendJson(res, 200, { ok: true, workspace, savedAt: new Date().toISOString() });
+    return true;
+  }
+
+  if (pathname === "/api/ai-logs" && req.method === "GET") {
+    if (!ensureRole(res, session, "viewer")) return true;
+    sendJson(res, 200, readAiLogsFromDatabase(rootDir, env, session));
+    return true;
+  }
+
+  if (pathname === "/api/analytics/summary" && req.method === "GET") {
+    if (!ensureRole(res, session, "viewer")) return true;
+    sendJson(res, 200, await readAnalyticsSummary(rootDir, env));
+    return true;
+  }
+
   if (pathname === "/api/generate-script" && req.method === "POST") {
-    return handleGenerateScript({ req, res, env, rootDir });
+    if (!ensureRole(res, session, "editor")) return true;
+    return handleGenerateScript({ req, res, env, rootDir, session });
   }
 
   return false;

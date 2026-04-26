@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { buildAnalyticsSummary, normalizeAnalyticsStore, recordAnalyticsEvent } from "../server/apiCore.mjs";
+import { closeDatabase } from "../server/database.mjs";
 
 test("recordAnalyticsEvent tracks page views and unique visitors by page", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "djcytools-analytics-"));
@@ -21,6 +22,7 @@ test("recordAnalyticsEvent tracks page views and unique visitors by page", async
     assert.equal(summary.totals.uniqueVisitors, 2);
     assert.equal(summary.recentEvents[0].page, "workbench");
   } finally {
+    closeDatabase(rootDir);
     await rm(rootDir, { recursive: true, force: true });
   }
 });

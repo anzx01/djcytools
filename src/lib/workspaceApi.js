@@ -2,7 +2,7 @@ async function apiFetch(url, options = {}) {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs || 15_000);
   try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
+    const response = await fetch(url, { credentials: "same-origin", ...options, signal: controller.signal });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       const detail = data.code ? `${data.error || "请求失败"}（${data.code}）` : data.error || "请求失败";
@@ -50,6 +50,35 @@ function shouldSendPageView(page) {
   return true;
 }
 
+export async function fetchAuthSession() {
+  return apiFetch("/api/auth/session", { timeoutMs: 8000 });
+}
+
+export async function login(email, password) {
+  return apiFetch("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+    timeoutMs: 8000,
+  });
+}
+
+export async function register({ email, password, name, teamName }) {
+  return apiFetch("/api/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password, name, teamName }),
+    timeoutMs: 8000,
+  });
+}
+
+export async function logout() {
+  return apiFetch("/api/auth/logout", {
+    method: "POST",
+    timeoutMs: 8000,
+  });
+}
+
 export async function loadWorkspaceFromServer() {
   const data = await apiFetch("/api/workspace");
   return data.workspace;
@@ -60,6 +89,38 @@ export async function saveWorkspaceToServer(workspace) {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ workspace }),
+  });
+}
+
+export async function fetchProjects() {
+  const data = await apiFetch("/api/projects");
+  return data.projects || [];
+}
+
+export async function fetchProject(projectId) {
+  const data = await apiFetch(`/api/projects/${encodeURIComponent(projectId)}`);
+  return data.project;
+}
+
+export async function createProjectOnServer(project) {
+  return apiFetch("/api/projects", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project }),
+  });
+}
+
+export async function updateProjectOnServer(projectId, patch) {
+  return apiFetch(`/api/projects/${encodeURIComponent(projectId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+}
+
+export async function deleteProjectOnServer(projectId) {
+  return apiFetch(`/api/projects/${encodeURIComponent(projectId)}`, {
+    method: "DELETE",
   });
 }
 

@@ -1,6 +1,6 @@
 # DJCYTools AI 短剧叙事工厂
 
-DJCYTools 是一个面向短剧出海团队的本地全栈 MVP。它把落地页、DeepSeek 生成、结构化剧本编辑、版本实验、趋势参考、60 个热门模板、团队权限、导出、投流回流、服务端 JSON 持久化和 AI 调用日志串成完整闭环。
+DJCYTools 是一个面向短剧出海团队的本地全栈 MVP。它把落地页、账号登录、团队角色、DeepSeek 生成、结构化剧本编辑、版本实验、趋势参考、60 个热门模板、导出、投流回流、SQLite 持久化、访问埋点和 AI 调用日志串成完整闭环。
 
 ![1777184657560](image/README/1777184657560.png)
 
@@ -65,13 +65,20 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-v4-flash
 DEEPSEEK_TIMEOUT_MS=70000
 DJCYTOOLS_MAX_BODY_BYTES=1048576
+DJCYTOOLS_REQUEST_TIMEOUT_MS=30000
 DJCYTOOLS_RATE_LIMIT_WINDOW_MS=60000
 DJCYTOOLS_RATE_LIMIT_MAX=80
+DJCYTOOLS_ADMIN_EMAIL=admin@djcytools.local
+DJCYTOOLS_ADMIN_PASSWORD=DJCYTools@2026
+DJCYTOOLS_ADMIN_NAME=DJCYTools 管理员
+DJCYTOOLS_TEAM_NAME=出海短剧实验室
 ```
 
 `.env` 已被 `.gitignore` 忽略。DeepSeek API Key 只在服务端代理中使用，不会打进前端 bundle。
 
 如果曾经在聊天、截图或公开文档中暴露过真实 Key，请在 DeepSeek 控制台轮换密钥后再更新本地 `.env`。
+
+首次启动会按环境变量创建默认所有者账号。未配置时默认账号为 `admin@djcytools.local`，默认密码为 `DJCYTools@2026`；本地自测可以直接使用，上线或分享前请改掉 `DJCYTOOLS_ADMIN_PASSWORD`。
 
 ## 已实现能力
 
@@ -89,12 +96,15 @@ DJCYTOOLS_RATE_LIMIT_MAX=80
 - 60 个热门模板，按类型和热度排序
 - 模板库管理：复制当前模板、保存团队自定义模板、编辑/删除自定义模板
 - 趋势看板：情绪标签、模板信号、市场提示
-- 团队权限：团队名、成员、角色编辑
+- 账号与权限：登录、HttpOnly 会话、用户表、团队表、所有者/编辑者/查看者角色、接口鉴权
+- 邮箱注册：新邮箱注册后自动创建个人团队，并以所有者身份进入工作台
+- 团队权限：团队名、成员、角色编辑；非所有者只能查看团队配置
 - 导出：TXT / PDF / DOC / JSON
 - 工作区备份与恢复：导出/导入完整 JSON 工作区
 - 工作区归一化：旧缓存、服务端数据、备份导入都会补齐团队、设置、自定义模板和活跃项目字段
-- 项目管理：状态流转、项目删除
-- 服务端持久化：项目、版本、评论、导出记录、团队成员
+- 项目管理：项目列表查询、搜索筛选、新建草稿、项目改名、状态流转、单项目读取和删除
+- SQLite 持久化：用户、团队、项目、版本、评论、导出、投流结果、自定义模板、AI 日志、访问埋点拆表
+- JSON 迁移：首次启动会把旧 `data/workspace.json`、`data/ai-logs.json`、`data/analytics.json` 导入 SQLite
 - 数据埋点：匿名记录落地页和工作台访问量、独立访客、最近访问时间，并在工作台运行状态展示
 - AI 调用日志：模型、token、耗时、估算成本、成功/失败状态
 - P0 稳定性：API 请求体限制、DeepSeek 超时、简单限流、静态资源缓存、安全响应头、统一错误码
@@ -149,8 +159,17 @@ defaultParams
 
 ```text
 GET  /api/health
+GET  /api/auth/session
+POST /api/auth/login
+POST /api/auth/register
+POST /api/auth/logout
 GET  /api/workspace
 PUT  /api/workspace
+GET  /api/projects
+POST /api/projects
+GET  /api/projects/:id
+PATCH /api/projects/:id
+DELETE /api/projects/:id
 GET  /api/ai-logs
 GET  /api/analytics/summary
 POST /api/analytics/event
@@ -160,9 +179,10 @@ POST /api/generate-script
 运行期数据写入：
 
 ```text
-data/workspace.json
-data/ai-logs.json
-data/analytics.json
+data/djcytools.sqlite
+data/workspace.json      旧数据迁移来源，不再作为主存储
+data/ai-logs.json        旧数据迁移来源，不再作为主存储
+data/analytics.json      旧数据迁移来源，不再作为主存储
 ```
 
 这些文件默认被 `.gitignore` 忽略。
@@ -181,8 +201,9 @@ src/data/templates.js        60 个模板和市场配置
 src/data/trends.js           趋势和模板信号
 src/lib/generator.js         本地生成、评分、版本工具
 src/lib/deepseekClient.js    前端调用 DeepSeek 代理
-src/lib/workspaceApi.js      前端工作区、AI 日志和埋点 API
+src/lib/workspaceApi.js      前端工作区、项目 CRUD、AI 日志和埋点 API
 server/apiCore.mjs           共享 API 内核
+server/database.mjs          SQLite schema、迁移、会话和权限
 server.mjs                   生产服务器
 vite.config.js               开发服务器与 API 插件
 ```
@@ -199,14 +220,17 @@ npm run check
 
 ```bash
 curl http://127.0.0.1:4173/api/health
-curl http://127.0.0.1:4173/api/workspace
-curl http://127.0.0.1:4173/api/ai-logs
-curl http://127.0.0.1:4173/api/analytics/summary
+curl http://127.0.0.1:4173/api/auth/session
+curl -c cookies.txt -H "Content-Type: application/json" -d "{\"email\":\"admin@djcytools.local\",\"password\":\"DJCYTools@2026\"}" http://127.0.0.1:4173/api/auth/login
+curl -c cookies.txt -H "Content-Type: application/json" -d "{\"email\":\"new@djcytools.local\",\"password\":\"DJCYTools@2026\",\"name\":\"新用户\",\"teamName\":\"新团队\"}" http://127.0.0.1:4173/api/auth/register
+curl -b cookies.txt http://127.0.0.1:4173/api/workspace
+curl -b cookies.txt http://127.0.0.1:4173/api/ai-logs
+curl -b cookies.txt http://127.0.0.1:4173/api/analytics/summary
 ```
 
 ## 后续建议
 
-- 接入真实账号体系和团队登录
-- 将 JSON 文件持久化升级为 PostgreSQL
+- 增加团队邀请、重置密码和操作审计
+- 多实例部署时将 SQLite 升级为 PostgreSQL
 - 增加模板后台管理和模板效果回流
 - 增加更细的合规审核和相似度检测

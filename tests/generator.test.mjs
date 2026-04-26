@@ -13,7 +13,7 @@ test("createProject generates a scored editable short drama project", () => {
     params: templates[0].defaultParams,
   });
 
-  assert.equal(project.name, "测试项目");
+  assert.equal(project.name, project.versions[0].selectedTitle);
   assert.equal(project.versions.length, 1);
   assert.equal(project.campaignResults.length, 0);
   assert.ok(project.versions[0].episodes.length >= 3);

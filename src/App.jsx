@@ -9,9 +9,12 @@ import {
   Gauge,
   GitCompare,
   Home,
+  LogIn,
+  LogOut,
   PenLine,
   Plus,
   ScrollText,
+  ShieldCheck,
   Sparkles,
   Target,
   Trash2,
@@ -24,7 +27,20 @@ import { createProject, createProjectFromVersion, getTemplate, mergeParams, rewr
 import { loadWorkspace, normalizeWorkspace, saveWorkspace } from "./lib/storage";
 import { calculateCampaignMetrics } from "./lib/exporters";
 import { generateVersionWithDeepSeek, rewriteVersionWithDeepSeek } from "./lib/deepseekClient";
-import { fetchAiLogs, fetchAnalyticsSummary, loadWorkspaceFromServer, saveWorkspaceToServer, trackPageView } from "./lib/workspaceApi";
+import {
+  fetchAiLogs,
+  fetchAnalyticsSummary,
+  fetchAuthSession,
+  createProjectOnServer,
+  deleteProjectOnServer,
+  loadWorkspaceFromServer,
+  login,
+  logout,
+  register,
+  saveWorkspaceToServer,
+  trackPageView,
+  updateProjectOnServer,
+} from "./lib/workspaceApi";
 import {
   CampaignPanel,
   DeliveryPanel,
@@ -33,6 +49,7 @@ import {
   Metric,
   OpsPanel,
   PanelHeader,
+  ProjectManagementPanel,
   ScoreCard,
   ScriptEditor,
   TeamPanel,
@@ -58,6 +75,14 @@ const emptyAnalyticsState = {
     workbench: { pageViews: 0, uniqueVisitors: 0, lastVisitedAt: null },
   },
   recentEvents: [],
+};
+
+const unauthenticatedState = {
+  status: "ready",
+  authenticated: false,
+  user: null,
+  team: null,
+  membership: null,
 };
 
 function formatDate(value) {
@@ -87,9 +112,15 @@ export default function App() {
   const [storageStatus, setStorageStatus] = useState("正在连接服务端工作区...");
   const [aiLogState, setAiLogState] = useState({ logs: [], totals: { count: 0, success: 0, tokens: 0, costUsd: 0 } });
   const [analyticsState, setAnalyticsState] = useState(emptyAnalyticsState);
+  const [authState, setAuthState] = useState({ ...unauthenticatedState, status: "checking" });
+  const [loginError, setLoginError] = useState("");
   const serverReadyRef = useRef(false);
   const saveTimerRef = useRef(null);
   const backupInputRef = useRef(null);
+  const isAuthenticated = Boolean(authState.authenticated);
+  const currentRole = authState.membership?.role || "viewer";
+  const canEdit = currentRole === "owner" || currentRole === "editor";
+  const canManageTeam = currentRole === "owner";
 
   useEffect(() => {
     function syncRouteFromHash() {
@@ -105,8 +136,18 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    fetchAuthSession()
+      .then((session) => {
+        setAuthState(session.authenticated ? { status: "ready", ...session } : unauthenticatedState);
+      })
+      .catch(() => {
+        setAuthState(unauthenticatedState);
+      });
+  }, []);
+
+  useEffect(() => {
     saveWorkspace(workspace);
-    if (!serverReadyRef.current) return;
+    if (!serverReadyRef.current || !isAuthenticated || !canEdit) return;
 
     if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
     saveTimerRef.current = window.setTimeout(() => {
@@ -126,9 +167,13 @@ export default function App() {
     return () => {
       if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
     };
-  }, [workspace]);
+  }, [workspace, isAuthenticated, canEdit]);
 
   useEffect(() => {
+    if (!isAuthenticated) {
+      serverReadyRef.current = false;
+      return;
+    }
     loadWorkspaceFromServer()
       .then((serverWorkspace) => {
         serverReadyRef.current = true;
@@ -148,7 +193,7 @@ export default function App() {
       });
     refreshAiLogs();
     refreshAnalytics();
-  }, []);
+  }, [isAuthenticated]);
 
   useEffect(() => {
     const page = showLanding ? "landing" : "workbench";
@@ -173,6 +218,41 @@ export default function App() {
     fetchAnalyticsSummary()
       .then(setAnalyticsState)
       .catch(() => setAnalyticsState(emptyAnalyticsState));
+  }
+
+  async function handleLogin({ email, password }) {
+    setLoginError("");
+    try {
+      const session = await login(email, password);
+      setAuthState({ status: "ready", ...session });
+      setActionError(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "登录失败";
+      setLoginError(message);
+    }
+  }
+
+  async function handleRegister({ email, password, name, teamName }) {
+    setLoginError("");
+    try {
+      const session = await register({ email, password, name, teamName });
+      setAuthState({ status: "ready", ...session });
+      setActionError(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "注册失败";
+      setLoginError(message);
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      await logout();
+    } finally {
+      serverReadyRef.current = false;
+      setAuthState(unauthenticatedState);
+      setStorageStatus("已退出登录");
+      setAiLogState({ logs: [], totals: { count: 0, success: 0, tokens: 0, costUsd: 0 } });
+    }
   }
 
   const activeProject = useMemo(
@@ -247,16 +327,61 @@ export default function App() {
     setDraftParams(mergeParams(template));
   }
 
-  async function handleCreateProject() {
-    if (isGenerating) return;
+  function buildNormalizedBrief() {
     const episodeCount = Math.min(Math.max(Number(draftBrief.episodeCount || 24), 12), 40);
-    const normalizedBrief = {
+    return {
       ...draftBrief,
       title: draftBrief.title?.trim() || `${selectedTemplate.name} 实验项目`,
       painPoint: draftBrief.painPoint?.trim() || selectedTemplate.premise,
       audience: draftBrief.audience?.trim() || selectedTemplate.tags?.join(" / ") || "短剧核心观众",
       episodeCount,
     };
+  }
+
+  async function persistCreatedProject(project, successMessage = "项目已创建并同步") {
+    setWorkspace((current) => ({
+      ...current,
+      activeProjectId: project.id,
+      projects: [project, ...current.projects.filter((item) => item.id !== project.id)],
+    }));
+    setCompareVersionId("");
+
+    if (!serverReadyRef.current || !isAuthenticated || !canEdit) return;
+    try {
+      await createProjectOnServer(project);
+      setStorageStatus(successMessage);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "项目接口同步失败";
+      setStorageStatus(`项目接口同步失败：${message}`);
+      setActionError({
+        title: "项目接口同步失败",
+        message,
+        detail: "项目已保存在本地缓存；自动工作区同步会继续尝试写入服务端。",
+        tone: "warning",
+      });
+    }
+  }
+
+  async function handleCreateDraftProject() {
+    if (!canEdit) return;
+    const project = createProject({ brief: buildNormalizedBrief(), params: draftParams, templateCatalog });
+    project.comments = [
+      {
+        id: uid("comment"),
+        author: "系统",
+        text: "已创建项目草稿，可继续编辑或调用 DeepSeek 改写。",
+        createdAt: new Date().toISOString(),
+      },
+      ...project.comments,
+    ];
+    setGenerationNotice("已创建项目草稿。");
+    setActionError(null);
+    await persistCreatedProject(project, "项目草稿已创建并同步");
+  }
+
+  async function handleCreateProject() {
+    if (isGenerating || !canEdit) return;
+    const normalizedBrief = buildNormalizedBrief();
 
     setIsGenerating(true);
     setGenerationNotice("正在调用 DeepSeek 生成短剧项目...");
@@ -292,18 +417,13 @@ export default function App() {
       });
     }
 
-    setWorkspace((current) => ({
-      ...current,
-      activeProjectId: project.id,
-      projects: [project, ...current.projects],
-    }));
-    setCompareVersionId("");
+    await persistCreatedProject(project, "DeepSeek 项目已创建并同步");
     setIsGenerating(false);
     refreshAiLogs();
   }
 
   async function handleRewrite(instruction) {
-    if (!activeProject || !activeVersion || isRewriting) return;
+    if (!activeProject || !activeVersion || isRewriting || !canEdit) return;
     const previousVersionId = activeVersion.id;
     setIsRewriting(true);
     setGenerationNotice(`正在调用 DeepSeek 执行「${instruction}」...`);
@@ -359,13 +479,38 @@ export default function App() {
     }
   }
 
+  function updateProjectDetails(projectId, patch) {
+    if (!projectId || !canEdit) return;
+    const nextPatch = { ...patch, updatedAt: new Date().toISOString() };
+    patchWorkspaceProject(projectId, (project) => ({
+      ...project,
+      ...nextPatch,
+      name: typeof nextPatch.name === "string" ? nextPatch.name.trim() || "未命名项目" : project.name,
+      status: nextPatch.status || project.status,
+    }));
+
+    if (!serverReadyRef.current || !isAuthenticated) return;
+    updateProjectOnServer(projectId, patch)
+      .then(() => setStorageStatus("项目已更新并同步"))
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : "项目更新同步失败";
+        setStorageStatus(`项目更新同步失败：${message}`);
+        setActionError({
+          title: "项目更新同步失败",
+          message,
+          detail: "本地修改已保留；自动工作区同步会继续尝试写入服务端。",
+          tone: "warning",
+        });
+      });
+  }
+
   function handleProjectStatus(status) {
-    if (!activeProject) return;
-    patchWorkspaceProject(activeProject.id, (project) => ({ ...project, status, updatedAt: new Date().toISOString() }));
+    if (!activeProject || !canEdit) return;
+    updateProjectDetails(activeProject.id, { status });
   }
 
   function addComment() {
-    if (!activeProject || !commentText.trim()) return;
+    if (!activeProject || !commentText.trim() || !canEdit) return;
     const comment = {
       id: uid("comment"),
       author: "团队成员",
@@ -381,7 +526,7 @@ export default function App() {
   }
 
   function recordExport(type, exporter) {
-    if (!activeProject || !activeVersion) return;
+    if (!activeProject || !activeVersion || !canEdit) return;
     exporter(activeProject, activeVersion);
     patchWorkspaceProject(activeProject.id, (project) => ({
       ...project,
@@ -393,7 +538,7 @@ export default function App() {
   }
 
   function addCampaignResult(result) {
-    if (!activeProject || !activeVersion) return;
+    if (!activeProject || !activeVersion || !canEdit) return;
     const metrics = calculateCampaignMetrics(result);
     patchWorkspaceProject(activeProject.id, (project) => ({
       ...project,
@@ -418,18 +563,47 @@ export default function App() {
     setCompareVersionId("");
   }
 
-  function deleteActiveProject() {
-    if (!activeProject) return;
-    if (!window.confirm(`确认删除项目「${activeProject.name}」？该操作会从当前工作区移除项目和所有版本。`)) return;
+  function deleteProject(projectId) {
+    if (!projectId || !canEdit) return;
+    const targetProject = workspace.projects.find((project) => project.id === projectId);
+    if (!targetProject) return;
+    if (workspace.projects.length <= 1) {
+      setActionError({
+        title: "不能删除最后一个项目",
+        message: "项目库至少需要保留一个项目。",
+        tone: "warning",
+      });
+      return;
+    }
+    if (!window.confirm(`确认删除项目「${targetProject.name}」？该操作会移除项目和所有版本。`)) return;
     setWorkspace((current) => {
-      const remaining = current.projects.filter((project) => project.id !== activeProject.id);
+      const remaining = current.projects.filter((project) => project.id !== projectId);
       return {
         ...current,
         projects: remaining,
-        activeProjectId: remaining[0]?.id || "",
+        activeProjectId: current.activeProjectId === projectId ? remaining[0]?.id || "" : current.activeProjectId,
       };
     });
     setCompareVersionId("");
+
+    if (!serverReadyRef.current || !isAuthenticated) return;
+    deleteProjectOnServer(projectId)
+      .then(() => setStorageStatus("项目已删除并同步"))
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : "项目删除同步失败";
+        setStorageStatus(`项目删除同步失败：${message}`);
+        setActionError({
+          title: "项目删除同步失败",
+          message,
+          detail: "本地项目库已更新；自动工作区同步会继续尝试写入服务端。",
+          tone: "warning",
+        });
+      });
+  }
+
+  function deleteActiveProject() {
+    if (!activeProject) return;
+    deleteProject(activeProject.id);
   }
 
   function exportWorkspaceBackup() {
@@ -445,7 +619,7 @@ export default function App() {
   }
 
   function importWorkspaceBackup(file) {
-    if (!file) return;
+    if (!file || !canEdit) return;
     const reader = new FileReader();
     reader.onload = () => {
       try {
@@ -494,6 +668,14 @@ export default function App() {
     return <LandingPage onLaunch={launchWorkbench} />;
   }
 
+  if (authState.status === "checking") {
+    return <AuthLoading />;
+  }
+
+  if (!isAuthenticated) {
+    return <LoginScreen error={loginError} onLogin={handleLogin} onRegister={handleRegister} onBack={openLanding} />;
+  }
+
   return (
     <div className="app-shell">
       <aside className="side-rail">
@@ -518,7 +700,7 @@ export default function App() {
         <div className="rail-section">
           <div className="section-title">
             <span>项目库</span>
-            <button className="icon-button" type="button" onClick={handleCreateProject} title="按当前参数生成新项目" disabled={isGenerating}>
+            <button className="icon-button" type="button" onClick={handleCreateProject} title="按当前参数生成新项目" disabled={isGenerating || !canEdit}>
               <Plus size={16} />
             </button>
           </div>
@@ -550,24 +732,34 @@ export default function App() {
             <h2>{activeProject?.name || "新项目"}</h2>
           </div>
           <div className="top-actions">
+            <span className="user-pill">
+              <ShieldCheck size={14} />
+              {authState.user?.name || "已登录"}
+              <small>{authState.membership?.roleLabel || "查看者"}</small>
+            </span>
             {["草稿", "评审中", "已定稿", "已导出"].map((status) => (
               <button
                 key={status}
                 type="button"
                 className={`segmented ${activeProject?.status === status ? "selected" : ""}`}
                 onClick={() => handleProjectStatus(status)}
+                disabled={!canEdit}
               >
                 {activeProject?.status === status && <Check size={14} />}
                 {status}
               </button>
             ))}
-            <button className="segmented danger" type="button" onClick={deleteActiveProject} disabled={!activeProject || workspace.projects.length <= 1}>
+            <button className="segmented danger" type="button" onClick={deleteActiveProject} disabled={!canEdit || !activeProject || workspace.projects.length <= 1}>
               <Trash2 size={14} />
               删除项目
             </button>
             <button className="segmented quiet" type="button" onClick={openLanding}>
               <Home size={14} />
               落地页
+            </button>
+            <button className="segmented quiet" type="button" onClick={handleLogout}>
+              <LogOut size={14} />
+              退出
             </button>
           </div>
         </header>
@@ -667,9 +859,9 @@ export default function App() {
 
             <DraftReadinessPanel readiness={draftReadiness} />
             {generationNotice && <p className="generation-notice">{generationNotice}</p>}
-            <button className="primary-action" type="button" onClick={handleCreateProject} disabled={isGenerating}>
+            <button className="primary-action" type="button" onClick={handleCreateProject} disabled={isGenerating || !canEdit}>
               <Wand2 size={18} />
-              {isGenerating ? "DeepSeek 生成中..." : "生成短剧项目"}
+              {isGenerating ? "DeepSeek 生成中..." : canEdit ? "生成短剧项目" : "查看者无生成权限"}
             </button>
           </section>
 
@@ -680,7 +872,7 @@ export default function App() {
                 version={activeVersion}
                 patchActiveVersion={patchActiveVersion}
                 onRewrite={handleRewrite}
-                isRewriting={isRewriting}
+                isRewriting={isRewriting || !canEdit}
               />
             ) : (
               <div className="empty-state">创建项目后开始编辑。</div>
@@ -688,9 +880,24 @@ export default function App() {
           </section>
 
           <aside className="right-stack">
+            <section className="panel">
+              <PanelHeader icon={BookOpenText} eyebrow="PROJECTS" title="项目管理" />
+              <ProjectManagementPanel
+                projects={workspace.projects}
+                activeProjectId={activeProject?.id || workspace.activeProjectId}
+                canEdit={canEdit}
+                isGenerating={isGenerating}
+                onSelectProject={selectProject}
+                onCreateDraftProject={handleCreateDraftProject}
+                onGenerateProject={handleCreateProject}
+                onUpdateProject={updateProjectDetails}
+                onDeleteProject={deleteProject}
+              />
+            </section>
+
             <section className="panel score-panel">
               <PanelHeader icon={Gauge} eyebrow="QUALITY" title="AI 评分" />
-              {activeVersion && <ScoreCard version={activeVersion} onRewrite={handleRewrite} isRewriting={isRewriting} />}
+              {activeVersion && <ScoreCard version={activeVersion} onRewrite={handleRewrite} isRewriting={isRewriting || !canEdit} />}
             </section>
 
             <section className="panel">
@@ -727,7 +934,7 @@ export default function App() {
 
             <section className="panel">
               <PanelHeader icon={Users} eyebrow="TEAM" title="团队权限" />
-              <TeamPanel workspace={workspace} setWorkspace={setWorkspace} />
+              <TeamPanel workspace={workspace} setWorkspace={setWorkspace} canManageTeam={canManageTeam} />
             </section>
 
             <section className="panel">
@@ -766,5 +973,105 @@ export default function App() {
         </div>
       </main>
     </div>
+  );
+}
+
+function AuthLoading() {
+  return (
+    <main className="auth-shell">
+      <div className="auth-panel">
+        <div className="brand-mark">
+          <ScrollText size={22} />
+        </div>
+        <p className="eyebrow">DJCYTOOLS</p>
+        <h1>正在校验登录状态</h1>
+      </div>
+    </main>
+  );
+}
+
+function LoginScreen({ error, onLogin, onRegister, onBack }) {
+  const [mode, setMode] = useState("login");
+  const [email, setEmail] = useState("admin@djcytools.local");
+  const [name, setName] = useState("");
+  const [teamName, setTeamName] = useState("");
+  const [password, setPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const isRegister = mode === "register";
+
+  async function submit(event) {
+    event.preventDefault();
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      if (isRegister) {
+        await onRegister({ email, password, name, teamName });
+      } else {
+        await onLogin({ email, password });
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function switchMode(nextMode) {
+    setMode(nextMode);
+    if (nextMode === "register" && email === "admin@djcytools.local") setEmail("");
+  }
+
+  return (
+    <main className="auth-shell">
+      <form className="auth-panel" onSubmit={submit}>
+        <div className="brand-mark">
+          <ScrollText size={22} />
+        </div>
+        <p className="eyebrow">TEAM WORKSPACE</p>
+        <h1>{isRegister ? "注册短剧叙事工厂" : "登录短剧叙事工厂"}</h1>
+        <div className="auth-tabs" role="tablist" aria-label="账号入口">
+          <button className={!isRegister ? "selected" : ""} type="button" onClick={() => switchMode("login")}>
+            登录
+          </button>
+          <button className={isRegister ? "selected" : ""} type="button" onClick={() => switchMode("register")}>
+            邮箱注册
+          </button>
+        </div>
+        <label>
+          邮箱
+          <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" />
+        </label>
+        {isRegister && (
+          <label>
+            姓名
+            <input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" />
+          </label>
+        )}
+        {isRegister && (
+          <label>
+            团队名
+            <input value={teamName} onChange={(event) => setTeamName(event.target.value)} autoComplete="organization" />
+          </label>
+        )}
+        <label>
+          密码
+          <input
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            autoComplete={isRegister ? "new-password" : "current-password"}
+            minLength={isRegister ? 8 : undefined}
+          />
+        </label>
+        {isRegister && <p className="muted-note">注册后会自动创建个人团队，并以所有者身份登录。</p>}
+        {error && <p className="auth-error">{error}</p>}
+        <button className="primary-action" type="submit" disabled={submitting}>
+          <LogIn size={18} />
+          {submitting ? (isRegister ? "注册中..." : "登录中...") : isRegister ? "注册并进入工作台" : "登录工作台"}
+        </button>
+        <button className="secondary-action" type="button" onClick={onBack}>
+          <Home size={15} />
+          返回落地页
+        </button>
+      </form>
+    </main>
   );
 }

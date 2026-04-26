@@ -4,12 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1",
-    "build": "vite build",
-    "test": "node --test",
+    "dev": "node --no-warnings=ExperimentalWarning ./node_modules/vite/bin/vite.js --host 127.0.0.1",
+    "build": "node --no-warnings=ExperimentalWarning ./node_modules/vite/bin/vite.js build",
+    "test": "node --no-warnings=ExperimentalWarning --test",
     "check": "npm run test && npm run build",
-    "preview": "vite preview --host 127.0.0.1",
-    "start": "node server.mjs"
+    "preview": "node --no-warnings=ExperimentalWarning ./node_modules/vite/bin/vite.js preview --host 127.0.0.1",
+    "start": "node --no-warnings=ExperimentalWarning server.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.0.4",
