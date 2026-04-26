@@ -1,4 +1,4 @@
-import { buildRewriteParams, getMarket, getTemplate, normalizeAiVersion } from "./generator";
+import { buildRewriteParams, getMarket, getTemplate, normalizeAiVersion } from "./generator.js";
 
 export async function generateVersionWithDeepSeek({ brief, params }) {
   const response = await fetch("/api/generate-script", {

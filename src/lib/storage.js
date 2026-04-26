@@ -1,4 +1,4 @@
-import { createSeedWorkspace } from "./workspaceSeed";
+import { createSeedWorkspace } from "./workspaceSeed.js";
 
 const STORAGE_KEY = "djcytools.workspace.v1";
 

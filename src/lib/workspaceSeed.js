@@ -1,5 +1,5 @@
-import { defaultBrief } from "../data/templates";
-import { createProject } from "./generator";
+import { defaultBrief } from "../data/templates.js";
+import { createProject } from "./generator.js";
 
 export function createSeedWorkspace() {
   const firstProject = createProject({

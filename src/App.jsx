@@ -19,15 +19,19 @@ import {
   RefreshCcw,
   ScrollText,
   Sparkles,
+  Target,
+  Trash2,
+  Users,
   Wand2,
 } from "lucide-react";
-import { defaultBrief, markets, templates } from "./data/templates";
+import { defaultBrief, markets, templates, templateTypes } from "./data/templates";
 import { lastTrendUpdated, marketNotes, templateSignals, trendTags } from "./data/trends";
 import { createProject, createProjectFromVersion, getTemplate, mergeParams, rewriteVersion, scoreScript, uid } from "./lib/generator";
 import { loadWorkspace, saveWorkspace } from "./lib/storage";
 import { exportDoc, exportJson, exportText, printPdf } from "./lib/exporters";
 import { generateVersionWithDeepSeek, rewriteVersionWithDeepSeek } from "./lib/deepseekClient";
 import { fetchAiLogs, loadWorkspaceFromServer, saveWorkspaceToServer } from "./lib/workspaceApi";
+import LandingPage from "./LandingPage.jsx";
 
 const parameterMeta = [
   { key: "humiliation", label: "羞辱强度", min: "克制", max: "强刺激" },
@@ -51,6 +55,7 @@ function updateVersionScore(version) {
 }
 
 export default function App() {
+  const [showLanding, setShowLanding] = useState(() => window.location.hash !== "#workbench");
   const [workspace, setWorkspace] = useState(() => loadWorkspace());
   const [draftBrief, setDraftBrief] = useState(defaultBrief);
   const [draftParams, setDraftParams] = useState(() => mergeParams(getTemplate(defaultBrief.templateId)));
@@ -275,6 +280,15 @@ export default function App() {
     ),
   };
 
+  function launchWorkbench() {
+    window.location.hash = "workbench";
+    setShowLanding(false);
+  }
+
+  if (showLanding) {
+    return <LandingPage onLaunch={launchWorkbench} />;
+  }
+
   return (
     <div className="app-shell">
       <aside className="side-rail">
@@ -365,10 +379,16 @@ export default function App() {
               <label>
                 模板
                 <select value={draftBrief.templateId} onChange={(event) => handleTemplateChange(event.target.value)}>
-                  {templates.map((template) => (
-                    <option value={template.id} key={template.id}>
-                      {template.name}
-                    </option>
+                  {templateTypes.map((type) => (
+                    <optgroup label={type} key={type}>
+                      {templates
+                        .filter((template) => template.type === type)
+                        .map((template) => (
+                          <option value={template.id} key={template.id}>
+                            #{template.heatRank} {template.name}
+                          </option>
+                        ))}
+                    </optgroup>
                   ))}
                 </select>
               </label>
@@ -472,6 +492,11 @@ export default function App() {
             <section className="panel">
               <PanelHeader icon={BarChart3} eyebrow="TRENDS" title="数据洞察" />
               <TrendPanel setDraftBrief={setDraftBrief} />
+            </section>
+
+            <section className="panel">
+              <PanelHeader icon={Users} eyebrow="TEAM" title="团队权限" />
+              <TeamPanel workspace={workspace} setWorkspace={setWorkspace} />
             </section>
 
             <section className="panel">
@@ -858,6 +883,69 @@ function DeliveryPanel({ project, version, commentText, setCommentText, addComme
           </p>
         ))}
       </div>
+    </div>
+  );
+}
+
+function TeamPanel({ workspace, setWorkspace }) {
+  const members = workspace.team?.members || [];
+
+  function patchTeam(patcher) {
+    setWorkspace((current) => ({
+      ...current,
+      team: patcher(current.team || { name: "未命名团队", members: [] }),
+    }));
+  }
+
+  function updateMember(index, field, value) {
+    patchTeam((team) => ({
+      ...team,
+      members: team.members.map((member, itemIndex) => (itemIndex === index ? { ...member, [field]: value } : member)),
+    }));
+  }
+
+  function addMember() {
+    patchTeam((team) => ({
+      ...team,
+      members: [...team.members, { name: "新成员", role: "查看者" }],
+    }));
+  }
+
+  function removeMember(index) {
+    patchTeam((team) => ({
+      ...team,
+      members: team.members.filter((_, itemIndex) => itemIndex !== index),
+    }));
+  }
+
+  return (
+    <div className="team-panel">
+      <label>
+        团队名称
+        <input
+          value={workspace.team?.name || ""}
+          onChange={(event) => patchTeam((team) => ({ ...team, name: event.target.value }))}
+        />
+      </label>
+      <div className="member-list">
+        {members.map((member, index) => (
+          <div className="member-row" key={`${member.name}-${index}`}>
+            <input value={member.name} onChange={(event) => updateMember(index, "name", event.target.value)} />
+            <select value={member.role} onChange={(event) => updateMember(index, "role", event.target.value)}>
+              <option>所有者</option>
+              <option>编辑者</option>
+              <option>查看者</option>
+            </select>
+            <button type="button" onClick={() => removeMember(index)} title="移除成员">
+              <Trash2 size={15} />
+            </button>
+          </div>
+        ))}
+      </div>
+      <button className="secondary-action" type="button" onClick={addMember}>
+        <Plus size={15} />
+        添加成员
+      </button>
     </div>
   );
 }

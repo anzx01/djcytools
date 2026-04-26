@@ -8,10 +8,12 @@ export const trendTags = [
 ];
 
 export const templateSignals = [
-  { name: "草根逆袭打脸", saveRate: 63, exportRate: 34, score: 87 },
-  { name: "霸总追妻火葬场", saveRate: 58, exportRate: 31, score: 84 },
-  { name: "真假千金", saveRate: 55, exportRate: 28, score: 82 },
-  { name: "契约婚姻", saveRate: 49, exportRate: 25, score: 78 },
+  { name: "隐婚亿万富豪双面丈夫", saveRate: 68, exportRate: 39, score: 99 },
+  { name: "霸总追妻火葬场", saveRate: 64, exportRate: 36, score: 97 },
+  { name: "命定狼后", saveRate: 62, exportRate: 35, score: 96 },
+  { name: "豪门背叛复仇局", saveRate: 60, exportRate: 34, score: 95 },
+  { name: "契约婚姻先婚后爱", saveRate: 58, exportRate: 32, score: 94 },
+  { name: "妻子的复仇", saveRate: 57, exportRate: 31, score: 93 },
 ];
 
 export const marketNotes = [

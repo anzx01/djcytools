@@ -1,4 +1,4 @@
-import { markets, templates } from "../data/templates";
+import { markets, templates } from "../data/templates.js";
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 
