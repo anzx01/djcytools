@@ -13,6 +13,7 @@ import {
   Flame,
   Gauge,
   GitCompare,
+  Home,
   MessageSquare,
   PenLine,
   Plus,
@@ -27,7 +28,7 @@ import {
 import { defaultBrief, markets, templates, templateTypes } from "./data/templates";
 import { lastTrendUpdated, marketNotes, templateSignals, trendTags } from "./data/trends";
 import { createProject, createProjectFromVersion, getTemplate, mergeParams, rewriteVersion, scoreScript, uid } from "./lib/generator";
-import { loadWorkspace, saveWorkspace } from "./lib/storage";
+import { loadWorkspace, normalizeWorkspace, saveWorkspace } from "./lib/storage";
 import { exportDoc, exportJson, exportText, printPdf } from "./lib/exporters";
 import { generateVersionWithDeepSeek, rewriteVersionWithDeepSeek } from "./lib/deepseekClient";
 import { fetchAiLogs, loadWorkspaceFromServer, saveWorkspaceToServer } from "./lib/workspaceApi";
@@ -71,6 +72,19 @@ export default function App() {
   const backupInputRef = useRef(null);
 
   useEffect(() => {
+    function syncRouteFromHash() {
+      setShowLanding(window.location.hash !== "#workbench");
+    }
+
+    window.addEventListener("hashchange", syncRouteFromHash);
+    window.addEventListener("popstate", syncRouteFromHash);
+    return () => {
+      window.removeEventListener("hashchange", syncRouteFromHash);
+      window.removeEventListener("popstate", syncRouteFromHash);
+    };
+  }, []);
+
+  useEffect(() => {
     saveWorkspace(workspace);
     if (!serverReadyRef.current) return;
 
@@ -89,7 +103,7 @@ export default function App() {
     loadWorkspaceFromServer()
       .then((serverWorkspace) => {
         serverReadyRef.current = true;
-        setWorkspace(serverWorkspace);
+        setWorkspace(normalizeWorkspace(serverWorkspace));
         setStorageStatus("服务端工作区已连接");
       })
       .catch((error) => {
@@ -137,6 +151,24 @@ export default function App() {
     return [...templateTypes, ...Array.from(new Set(customTypes))];
   }, [templateCatalog]);
 
+  const selectedTemplate = useMemo(() => getTemplate(draftBrief.templateId, templateCatalog), [draftBrief.templateId, templateCatalog]);
+
+  const draftReadiness = useMemo(() => {
+    const episodeCount = Number(draftBrief.episodeCount || 0);
+    const checks = [
+      { label: "项目名", done: Boolean(draftBrief.title?.trim()) },
+      { label: "情绪痛点", done: Boolean(draftBrief.painPoint?.trim()) },
+      { label: "目标观众", done: Boolean(draftBrief.audience?.trim()) },
+      { label: "模板", done: Boolean(selectedTemplate?.id) },
+      { label: "集数 12-40", done: episodeCount >= 12 && episodeCount <= 40 },
+      { label: "钩子密度", done: Number(draftParams.hookDensity || 0) >= 45 },
+    ];
+    return {
+      score: Math.round((checks.filter((item) => item.done).length / checks.length) * 100),
+      checks,
+    };
+  }, [draftBrief, draftParams.hookDensity, selectedTemplate]);
+
   function patchWorkspaceProject(projectId, patcher) {
     setWorkspace((current) => ({
       ...current,
@@ -163,20 +195,29 @@ export default function App() {
 
   async function handleCreateProject() {
     if (isGenerating) return;
+    const episodeCount = Math.min(Math.max(Number(draftBrief.episodeCount || 24), 12), 40);
+    const normalizedBrief = {
+      ...draftBrief,
+      title: draftBrief.title?.trim() || `${selectedTemplate.name} 实验项目`,
+      painPoint: draftBrief.painPoint?.trim() || selectedTemplate.premise,
+      audience: draftBrief.audience?.trim() || selectedTemplate.tags?.join(" / ") || "短剧核心观众",
+      episodeCount,
+    };
+
     setIsGenerating(true);
     setGenerationNotice("正在调用 DeepSeek 生成短剧项目...");
     let project;
 
     try {
-      const version = await generateVersionWithDeepSeek({ brief: draftBrief, params: draftParams, templateCatalog });
+      const version = await generateVersionWithDeepSeek({ brief: normalizedBrief, params: draftParams, templateCatalog });
       project = createProjectFromVersion({
-        brief: draftBrief,
+        brief: normalizedBrief,
         version,
         notice: "已使用 DeepSeek 生成初版，可先检查前 3 集钩子、市场适配和合规风险。",
       });
       setGenerationNotice("DeepSeek 生成完成。");
     } catch (error) {
-      project = createProject({ brief: draftBrief, params: draftParams, templateCatalog });
+      project = createProject({ brief: normalizedBrief, params: draftParams, templateCatalog });
       project.comments = [
         {
           id: uid("comment"),
@@ -189,11 +230,11 @@ export default function App() {
       setGenerationNotice("DeepSeek 调用失败，已用本地模拟结果兜底。");
     }
 
-      setWorkspace((current) => ({
-        ...current,
-        activeProjectId: project.id,
-        projects: [project, ...current.projects],
-      }));
+    setWorkspace((current) => ({
+      ...current,
+      activeProjectId: project.id,
+      projects: [project, ...current.projects],
+    }));
     setCompareVersionId("");
     setIsGenerating(false);
     refreshAiLogs();
@@ -319,10 +360,7 @@ export default function App() {
       try {
         const parsed = JSON.parse(String(reader.result || ""));
         if (!Array.isArray(parsed.projects) || !parsed.team) throw new Error("备份文件结构不正确");
-        setWorkspace({
-          ...parsed,
-          customTemplates: Array.isArray(parsed.customTemplates) ? parsed.customTemplates : [],
-        });
+        setWorkspace(normalizeWorkspace(parsed));
         setStorageStatus("已从备份恢复，正在同步服务端");
       } catch (error) {
         setStorageStatus(`备份恢复失败：${error instanceof Error ? error.message : "未知错误"}`);
@@ -344,6 +382,13 @@ export default function App() {
   function launchWorkbench() {
     window.location.hash = "workbench";
     setShowLanding(false);
+    window.scrollTo({ top: 0 });
+  }
+
+  function openLanding() {
+    window.history.pushState(null, "", `${window.location.pathname}${window.location.search}`);
+    setShowLanding(true);
+    window.scrollTo({ top: 0 });
   }
 
   if (showLanding) {
@@ -398,7 +443,7 @@ export default function App() {
         </div>
       </aside>
 
-      <main className="workbench">
+      <main className="workbench" id="workbench">
         <header className="top-bar">
           <div>
             <p className="eyebrow">PROJECT WORKBENCH</p>
@@ -419,6 +464,10 @@ export default function App() {
             <button className="segmented danger" type="button" onClick={deleteActiveProject} disabled={!activeProject || workspace.projects.length <= 1}>
               <Trash2 size={14} />
               删除项目
+            </button>
+            <button className="segmented quiet" type="button" onClick={openLanding}>
+              <Home size={14} />
+              落地页
             </button>
           </div>
         </header>
@@ -458,6 +507,7 @@ export default function App() {
                 </select>
               </label>
             </div>
+            <TemplateBriefPreview template={selectedTemplate} />
             <label>
               情绪痛点
               <textarea
@@ -513,6 +563,7 @@ export default function App() {
               ))}
             </div>
 
+            <DraftReadinessPanel readiness={draftReadiness} />
             {generationNotice && <p className="generation-notice">{generationNotice}</p>}
             <button className="primary-action" type="button" onClick={handleCreateProject} disabled={isGenerating}>
               <Wand2 size={18} />
@@ -632,6 +683,47 @@ function PanelHeader({ icon: Icon, eyebrow, title }) {
   );
 }
 
+function TemplateBriefPreview({ template }) {
+  const tags = template.tags || [];
+  return (
+    <div className="template-preview">
+      <div className="template-preview-head">
+        <span>{template.type}</span>
+        <strong>{template.heatScore || "自定义"}</strong>
+      </div>
+      <h4>{template.name}</h4>
+      <p>{template.hook}</p>
+      <div className="template-preview-tags">
+        {tags.slice(0, 4).map((tag) => (
+          <em key={tag}>{tag}</em>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DraftReadinessPanel({ readiness }) {
+  return (
+    <div className="readiness-panel">
+      <div className="readiness-head">
+        <span>生成准备度</span>
+        <strong>{readiness.score}%</strong>
+      </div>
+      <div className="readiness-track" aria-hidden="true">
+        <i style={{ width: `${readiness.score}%` }} />
+      </div>
+      <div className="readiness-checks">
+        {readiness.checks.map((item) => (
+          <span className={item.done ? "done" : ""} key={item.label}>
+            {item.done && <Check size={12} />}
+            {item.label}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ScriptEditor({ version, patchActiveVersion, onRewrite, isRewriting }) {
   function updateField(field, value) {
     patchActiveVersion((current) => ({ ...current, [field]: value }));
@@ -660,10 +752,24 @@ function ScriptEditor({ version, patchActiveVersion, onRewrite, isRewriting }) {
     }));
   }
 
+  function updateStringList(field, index, value) {
+    patchActiveVersion((current) => ({
+      ...current,
+      [field]: (current[field] || []).map((item, itemIndex) => (itemIndex === index ? value : item)),
+    }));
+  }
+
+  const titleCandidates = version.titleCandidates || [];
+  const sellingPoints = version.sellingPoints || [];
+  const adHooks = version.adHooks || [];
+  const characters = version.characters || [];
+  const outline = version.outline || [];
+  const episodes = version.episodes || [];
+
   return (
     <div className="editor-content">
       <div className="title-candidates">
-        {version.titleCandidates.map((title) => (
+        {titleCandidates.map((title) => (
           <button
             key={title}
             type="button"
@@ -682,6 +788,18 @@ function ScriptEditor({ version, patchActiveVersion, onRewrite, isRewriting }) {
         <textarea rows={3} value={version.logline} onChange={(event) => updateField("logline", event.target.value)} />
       </label>
 
+      <div className="section-band compact-section">
+        <h4>卖点卡</h4>
+        <div className="text-card-grid">
+          {sellingPoints.map((point, index) => (
+            <label className="text-card" key={`${point}-${index}`}>
+              卖点 {index + 1}
+              <textarea rows={2} value={point} onChange={(event) => updateStringList("sellingPoints", index, event.target.value)} />
+            </label>
+          ))}
+        </div>
+      </div>
+
       <div className="quick-actions">
         {["提高冲突", "生成投流钩子", "降低狗血度", "本地化表达"].map((item) => (
           <button key={item} type="button" onClick={() => onRewrite(item)} disabled={isRewriting}>
@@ -694,7 +812,7 @@ function ScriptEditor({ version, patchActiveVersion, onRewrite, isRewriting }) {
       <div className="section-band">
         <h4>人物卡</h4>
         <div className="character-grid">
-          {version.characters.map((character, index) => (
+          {characters.map((character, index) => (
             <div className="character-item" key={`${character.role}-${character.name}`}>
               <span>{character.role}</span>
               <input value={character.name} onChange={(event) => updateCharacter(index, "name", event.target.value)} />
@@ -708,7 +826,7 @@ function ScriptEditor({ version, patchActiveVersion, onRewrite, isRewriting }) {
       <div className="section-band">
         <h4>故事大纲</h4>
         <div className="outline-list">
-          {version.outline.map((arc, index) => (
+          {outline.map((arc, index) => (
             <label key={arc.id}>
               {arc.stage}
               <textarea
@@ -728,9 +846,21 @@ function ScriptEditor({ version, patchActiveVersion, onRewrite, isRewriting }) {
         </div>
       </div>
 
+      <div className="section-band compact-section">
+        <h4>投流钩子</h4>
+        <div className="ad-hook-list">
+          {adHooks.map((hook, index) => (
+            <label key={`${hook}-${index}`}>
+              钩子 {index + 1}
+              <textarea rows={2} value={hook} onChange={(event) => updateStringList("adHooks", index, event.target.value)} />
+            </label>
+          ))}
+        </div>
+      </div>
+
       <div className="section-band">
         <h4>前 3 集脚本</h4>
-        {version.episodes.map((episode, index) => (
+        {episodes.map((episode, index) => (
           <article className="episode-editor" key={episode.number}>
             <div className="episode-head">
               <strong>第 {episode.number} 集</strong>
@@ -752,7 +882,7 @@ function ScriptEditor({ version, patchActiveVersion, onRewrite, isRewriting }) {
               核心对白
               <textarea
                 rows={2}
-                value={episode.dialogue.join("\n")}
+                value={(episode.dialogue || []).join("\n")}
                 onChange={(event) => updateEpisode(index, "dialogue", event.target.value)}
               />
             </label>
@@ -1038,6 +1168,10 @@ function TemplateManager({ workspace, setWorkspace, templateCatalog, typeGroups,
   const selectedTemplate = getTemplate(draftBrief.templateId, templateCatalog);
   const [draftTemplate, setDraftTemplate] = useState(() => createTemplateDraft(selectedTemplate));
   const customTemplates = workspace.customTemplates || [];
+
+  useEffect(() => {
+    setDraftTemplate((current) => (current.id ? current : createTemplateDraft(selectedTemplate)));
+  }, [selectedTemplate.id]);
 
   function createTemplateDraft(template) {
     return {

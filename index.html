@@ -4,7 +4,75 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f5f1e8" />
-    <title>AI 短剧叙事工厂</title>
+    <meta
+      name="description"
+      content="DJCYTools 是面向短剧出海团队的 AI 短剧剧本生成器，支持 DeepSeek 中文生成、60 个热门模板、版本实验、评分、导出和团队协作。"
+    />
+    <meta
+      name="keywords"
+      content="AI短剧剧本生成器,DeepSeek短剧生成,短剧出海模板,短剧剧本工具,中文短剧生成"
+    />
+    <meta property="og:title" content="DJCYTools AI 短剧叙事工厂" />
+    <meta
+      property="og:description"
+      content="用 DeepSeek 和热门短剧模板，把创意变成可拍、可改、可投流的中文剧本资产。"
+    />
+    <title>DJCYTools AI 短剧剧本生成器 | DeepSeek 短剧生成与出海模板</title>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "SoftwareApplication",
+            "name": "DJCYTools AI 短剧叙事工厂",
+            "applicationCategory": "BusinessApplication",
+            "operatingSystem": "Web",
+            "description": "面向短剧出海团队的 AI 短剧剧本生成器，支持 DeepSeek 中文生成、热门模板、版本实验、评分、导出和团队协作。",
+            "featureList": [
+              "DeepSeek 中文短剧生成",
+              "60 个热门短剧模板",
+              "结构化剧本编辑",
+              "版本实验和评分",
+              "TXT、PDF、DOC、JSON 导出"
+            ],
+            "offers": {
+              "@type": "Offer",
+              "price": "0",
+              "priceCurrency": "USD"
+            }
+          },
+          {
+            "@type": "FAQPage",
+            "mainEntity": [
+              {
+                "@type": "Question",
+                "name": "DeepSeek API Key 会不会暴露在浏览器里？",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "不会。当前实现通过服务端代理读取 .env，前端只调用本地 API，生产构建不会把 Key 打进浏览器 bundle。"
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "外部 AI 接口失败时还能用吗？",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "可以。工作台保留本地兜底生成逻辑，DeepSeek 临时失败不会阻断立项、编辑和导出流程。"
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "模板能继续扩展吗？",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "能。内置模板按类型和热度组织，也支持团队自定义模板。"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>
