@@ -1,21 +1,38 @@
 import { buildRewriteParams, getMarket, getTemplate, normalizeAiVersion } from "./generator.js";
 
-export async function generateVersionWithDeepSeek({ brief, params, templateCatalog }) {
-  const response = await fetch("/api/generate-script", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      brief,
-      params,
-      template: getTemplate(brief.templateId, templateCatalog),
-      market: getMarket(brief.market),
-    }),
-  });
+async function callGenerateScript(payload) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 75_000);
+  try {
+    const response = await fetch("/api/generate-script", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify(payload),
+    });
 
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data.error || "DeepSeek 生成失败");
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const code = data.code ? `（${data.code}）` : "";
+      const requestId = data.requestId ? ` 请求ID：${data.requestId}` : "";
+      throw new Error(`${data.error || "DeepSeek 生成失败"}${code}${requestId}`);
+    }
+    return data;
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error("DeepSeek 请求超时，已切换到本地兜底生成");
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
   }
+}
+
+export async function generateVersionWithDeepSeek({ brief, params, templateCatalog }) {
+  const data = await callGenerateScript({
+    brief,
+    params,
+    template: getTemplate(brief.templateId, templateCatalog),
+    market: getMarket(brief.market),
+  });
 
   return normalizeAiVersion({
     brief,
@@ -32,30 +49,21 @@ export async function generateVersionWithDeepSeek({ brief, params, templateCatal
 
 export async function rewriteVersionWithDeepSeek({ project, activeVersion, instruction, templateCatalog }) {
   const nextParams = buildRewriteParams(activeVersion.parameters, instruction);
-  const response = await fetch("/api/generate-script", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      brief: project.brief,
-      params: nextParams,
-      template: getTemplate(project.brief.templateId, templateCatalog),
-      market: getMarket(project.brief.market),
-      instruction,
-      currentVersion: {
-        selectedTitle: activeVersion.selectedTitle,
-        logline: activeVersion.logline,
-        characters: activeVersion.characters,
-        outline: activeVersion.outline,
-        episodes: activeVersion.episodes,
-        adHooks: activeVersion.adHooks,
-      },
-    }),
+  const data = await callGenerateScript({
+    brief: project.brief,
+    params: nextParams,
+    template: getTemplate(project.brief.templateId, templateCatalog),
+    market: getMarket(project.brief.market),
+    instruction,
+    currentVersion: {
+      selectedTitle: activeVersion.selectedTitle,
+      logline: activeVersion.logline,
+      characters: activeVersion.characters,
+      outline: activeVersion.outline,
+      episodes: activeVersion.episodes,
+      adHooks: activeVersion.adHooks,
+    },
   });
-
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data.error || "DeepSeek 改写失败");
-  }
 
   const version = normalizeAiVersion({
     brief: project.brief,

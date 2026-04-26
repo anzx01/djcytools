@@ -26,7 +26,15 @@ const mimeTypes = {
 function sendJson(res, statusCode, data) {
   res.statusCode = statusCode;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store");
   res.end(JSON.stringify(data));
+}
+
+function applySecurityHeaders(res) {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
 }
 
 async function serveStatic(req, res) {
@@ -40,11 +48,25 @@ async function serveStatic(req, res) {
     if (!fileStat.isFile()) throw new Error("Not a file");
     res.statusCode = 200;
     res.setHeader("Content-Type", mimeTypes[path.extname(targetPath)] || "application/octet-stream");
+    if (path.basename(path.dirname(targetPath)) === "assets") {
+      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    } else {
+      res.setHeader("Cache-Control", "no-cache");
+    }
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
     createReadStream(targetPath).pipe(res);
   } catch {
     const fallback = path.join(distDir, "index.html");
     res.statusCode = 200;
     res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache");
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
     createReadStream(fallback).pipe(res);
   }
 }
@@ -52,12 +74,17 @@ async function serveStatic(req, res) {
 const env = await loadDotEnv(rootDir);
 
 const server = http.createServer(async (req, res) => {
+  applySecurityHeaders(res);
+
   if (req.url?.startsWith("/api/")) {
     try {
       const handled = await handleApiRequest({ req, res, env, rootDir });
       if (!handled) sendJson(res, 404, { error: "API route not found" });
     } catch (error) {
-      sendJson(res, 500, { error: error instanceof Error ? error.message : "API request failed" });
+      sendJson(res, error.statusCode || 500, {
+        error: error instanceof Error ? error.message : "API request failed",
+        code: error.code || "API_REQUEST_FAILED",
+      });
     }
     return;
   }

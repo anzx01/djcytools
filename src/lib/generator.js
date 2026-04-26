@@ -269,6 +269,7 @@ export function createProjectFromVersion({ brief, version, notice }) {
       },
     ],
     exports: [],
+    campaignResults: [],
   };
 }
 

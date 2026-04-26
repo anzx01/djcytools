@@ -10,7 +10,32 @@ function download(filename, content, type) {
   URL.revokeObjectURL(url);
 }
 
+export function sanitizeFilename(value) {
+  return String(value || "djcytools")
+    .replace(/[\\/:*?"<>|]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120) || "djcytools";
+}
+
+export function calculateCampaignMetrics(result = {}) {
+  const impressions = Number(result.impressions || 0);
+  const clicks = Number(result.clicks || 0);
+  const completions = Number(result.completions || 0);
+  const conversions = Number(result.conversions || 0);
+  const spend = Number(result.spend || 0);
+  const revenue = Number(result.revenue || 0);
+  return {
+    ctr: impressions ? Number(((clicks / impressions) * 100).toFixed(2)) : 0,
+    completionRate: impressions ? Number(((completions / impressions) * 100).toFixed(2)) : 0,
+    conversionRate: clicks ? Number(((conversions / clicks) * 100).toFixed(2)) : 0,
+    cpa: conversions ? Number((spend / conversions).toFixed(2)) : 0,
+    roas: spend ? Number((revenue / spend).toFixed(2)) : 0,
+  };
+}
+
 export function buildProjectText(project, version) {
+  const campaignResults = project.campaignResults || [];
   const lines = [
     `项目：${project.name}`,
     `版本：${version.name}`,
@@ -41,17 +66,25 @@ export function buildProjectText(project, version) {
     ]),
     "投流开场",
     ...version.adHooks,
+    "",
+    "投流结果回流",
+    ...(campaignResults.length
+      ? campaignResults.map((result) => {
+          const metrics = calculateCampaignMetrics(result);
+          return `${result.channel || "未命名渠道"}｜${result.materialName || "未命名素材"}｜版本：${result.versionName || result.versionId || "未记录"}｜CTR ${metrics.ctr}%｜完播 ${metrics.completionRate}%｜CPA $${metrics.cpa}｜ROAS ${metrics.roas}｜备注：${result.note || ""}`;
+        })
+      : ["暂无投流结果。"]),
   ];
   return lines.join("\n");
 }
 
 export function exportText(project, version) {
-  download(`${project.name}-${version.name}.txt`, buildProjectText(project, version), "text/plain;charset=utf-8");
+  download(`${sanitizeFilename(project.name)}-${sanitizeFilename(version.name)}.txt`, buildProjectText(project, version), "text/plain;charset=utf-8");
 }
 
 export function exportJson(project, version) {
   download(
-    `${project.name}-${version.name}.json`,
+    `${sanitizeFilename(project.name)}-${sanitizeFilename(version.name)}.json`,
     JSON.stringify({ project, version }, null, 2),
     "application/json;charset=utf-8",
   );
@@ -63,7 +96,7 @@ export function exportDoc(project, version) {
     .map((line) => `<p>${line.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;") || "&nbsp;"}</p>`)
     .join("");
   download(
-    `${project.name}-${version.name}.doc`,
+    `${sanitizeFilename(project.name)}-${sanitizeFilename(version.name)}.doc`,
     `<!doctype html><html><head><meta charset="utf-8"><title>${project.name}</title></head><body>${body}</body></html>`,
     "application/msword;charset=utf-8",
   );

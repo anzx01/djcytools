@@ -6,7 +6,13 @@ export function normalizeWorkspace(value) {
   const seed = createSeedWorkspace();
   if (!value || !Array.isArray(value.projects) || value.projects.length === 0) return seed;
 
-  const projects = value.projects.filter(Boolean);
+  const projects = value.projects.filter(Boolean).map((project) => ({
+    ...project,
+    comments: Array.isArray(project.comments) ? project.comments : [],
+    exports: Array.isArray(project.exports) ? project.exports : [],
+    versions: Array.isArray(project.versions) ? project.versions : [],
+    campaignResults: Array.isArray(project.campaignResults) ? project.campaignResults : [],
+  }));
   const activeProjectId = projects.some((project) => project.id === value.activeProjectId)
     ? value.activeProjectId
     : projects[0]?.id || seed.activeProjectId;
