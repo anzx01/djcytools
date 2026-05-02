@@ -1,6 +1,50 @@
 import { markets, templates } from "../data/templates.js";
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+const complianceRules = [
+  { keyword: "未成年", severity: 18, label: "未成年风险", suggestion: "避免让未成年人卷入恋爱、暴力或交易情节。" },
+  { keyword: "自杀", severity: 20, label: "自伤风险", suggestion: "改成求助、逃离或证据反击，不直接描写自伤行为。" },
+  { keyword: "毒品", severity: 18, label: "违法风险", suggestion: "删除毒品相关桥段，改用商业犯罪或合同欺诈。" },
+  { keyword: "强奸", severity: 22, label: "性暴力风险", suggestion: "不要把性暴力作为爽点或反转素材。" },
+  { keyword: "杀", severity: 10, label: "暴力表达", suggestion: "降低暴力词汇，使用法律追责或公开揭露替代。" },
+  { keyword: "歧视", severity: 16, label: "歧视表达", suggestion: "删除基于身份、地域、性别或族群的贬损表达。" },
+];
+
+function collectVersionText(version = {}) {
+  return [
+    version.selectedTitle,
+    version.logline,
+    ...(version.titleCandidates || []),
+    ...(version.sellingPoints || []),
+    ...(version.adHooks || []),
+    ...(version.characters || []).flatMap((item) => [item.role, item.name, item.archetype, item.motive, item.secret]),
+    ...(version.outline || []).flatMap((item) => [item.stage, item.summary]),
+    ...(version.episodes || []).flatMap((item) => [item.title, item.hook, item.beat, item.script, ...(item.dialogue || [])]),
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function tokenizeText(text) {
+  return Array.from(
+    new Set(
+      String(text || "")
+        .toLowerCase()
+        .replace(/[^\p{Script=Han}a-z0-9]+/gu, " ")
+        .split(/\s+/)
+        .flatMap((part) => {
+          if (!part) return [];
+          if (/^[\p{Script=Han}]+$/u.test(part)) {
+            const tokens = [];
+            for (let index = 0; index < part.length - 1; index += 1) tokens.push(part.slice(index, index + 2));
+            return tokens.length ? tokens : [part];
+          }
+          return [part];
+        })
+        .filter((part) => part.length >= 2),
+    ),
+  );
+}
 
 export function uid(prefix = "id") {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -21,15 +65,132 @@ export function mergeParams(template, params = {}) {
   };
 }
 
+export function analyzeCompliance(version = {}) {
+  const text = collectVersionText(version);
+  const flags = complianceRules
+    .filter((rule) => text.includes(rule.keyword))
+    .map((rule) => ({
+      label: rule.label,
+      keyword: rule.keyword,
+      severity: rule.severity,
+      suggestion: rule.suggestion,
+    }));
+  const params = version.parameters || {};
+  if (Number(params.humiliation || 0) > 88) {
+    flags.push({
+      label: "羞辱强度过高",
+      keyword: "humiliation",
+      severity: 8,
+      suggestion: "把公开羞辱改成证据压迫或价值否定，减少人格贬损。",
+    });
+  }
+  if (Number(params.conflict || 0) > 92) {
+    flags.push({
+      label: "冲突烈度过高",
+      keyword: "conflict",
+      severity: 7,
+      suggestion: "保留冲突目标，减少威胁、肢体暴力和极端台词。",
+    });
+  }
+  const riskScore = clamp(100 - flags.reduce((sum, item) => sum + item.severity, 0), 0, 100);
+  return {
+    riskScore,
+    level: riskScore >= 86 ? "低风险" : riskScore >= 70 ? "需复核" : "高风险",
+    flags,
+    suggestions: flags.length
+      ? Array.from(new Set(flags.map((flag) => flag.suggestion))).slice(0, 5)
+      : ["当前未命中高风险词，拍摄前仍建议进行人工合规复核。"],
+  };
+}
+
+export function analyzeSimilarity(version = {}, candidates = []) {
+  const sourceTokens = tokenizeText(collectVersionText(version));
+  if (!sourceTokens.length) {
+    return { maxSimilarity: 0, nearestVersionName: "", level: "低重复", matches: [] };
+  }
+  const sourceSet = new Set(sourceTokens);
+  const matches = candidates
+    .filter((candidate) => candidate?.id && candidate.id !== version.id)
+    .map((candidate) => {
+      const targetTokens = tokenizeText(collectVersionText(candidate));
+      const targetSet = new Set(targetTokens);
+      const overlap = sourceTokens.filter((token) => targetSet.has(token)).length;
+      const union = new Set([...sourceTokens, ...targetTokens]).size || 1;
+      return {
+        versionId: candidate.id,
+        versionName: candidate.name || candidate.selectedTitle || "未命名版本",
+        similarity: Number((overlap / union).toFixed(2)),
+        sharedTokens: sourceTokens.filter((token) => targetSet.has(token)).slice(0, 10),
+      };
+    })
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, 3);
+  const maxSimilarity = matches[0]?.similarity || 0;
+  return {
+    maxSimilarity,
+    nearestVersionName: matches[0]?.versionName || "",
+    level: maxSimilarity >= 0.62 ? "高重复" : maxSimilarity >= 0.42 ? "需区分" : "低重复",
+    matches,
+    uniqueTokenCount: sourceSet.size,
+  };
+}
+
+export function buildStoryboards(version = {}) {
+  const tone = (version.parameters?.hookDensity || 0) > 76 ? "快切、强字幕、近景压迫" : "克制铺垫、证据特写、情绪留白";
+  return (version.episodes || []).map((episode, index) => ({
+    episodeNumber: episode.number || index + 1,
+    title: episode.title || `第 ${index + 1} 集`,
+    shots: [
+      {
+        time: "0-10s",
+        frame: `用可视化事件打开：${episode.hook || "主角遭遇关键误会"}`,
+        camera: "中近景切特写，第一秒给冲突主体。",
+        sound: "低频冲击 + 一句短字幕钩子。",
+        prop: "证据文件、手机弹窗、门牌或公开名单。",
+      },
+      {
+        time: "10-45s",
+        frame: episode.beat || "关系冲突升级，双方立场迅速对撞。",
+        camera: tone,
+        sound: "对白压低背景音乐，保留停顿制造反应镜头。",
+        prop: "合同、戒指、工牌、会议屏幕等身份线索。",
+      },
+      {
+        time: "45-90s",
+        frame: episode.script || "主角留下下一集必须点击的反转证据。",
+        camera: "结尾给特写或背影，卡在信息即将公开之前。",
+        sound: "音乐停顿后切黑，字幕落在最后 1 秒。",
+        prop: "未打开的信封、录音界面、匿名来电。",
+      },
+    ],
+  }));
+}
+
+function enrichVersion(version, candidates = []) {
+  const withProduction = {
+    ...version,
+    storyboards: Array.isArray(version.storyboards) && version.storyboards.length ? version.storyboards : buildStoryboards(version),
+  };
+  const complianceReport = analyzeCompliance(withProduction);
+  const similarityReport = analyzeSimilarity(withProduction, candidates);
+  return {
+    ...withProduction,
+    complianceReport,
+    similarityReport,
+    score: scoreScript({ ...withProduction, complianceReport, similarityReport }),
+  };
+}
+
 export function scoreScript(version) {
-  const params = version.parameters;
+  const params = version.parameters || {};
   const hookScore = clamp(Math.round((params.hookDensity + params.conflict) / 2 + 7), 0, 100);
   const emotionScore = clamp(Math.round((params.humiliation + params.sweet + params.conflict) / 3 + 4), 0, 100);
   const reversalScore = clamp(Math.round(params.reversal + params.hookDensity * 0.12), 0, 100);
   const characterScore = clamp(76 + (version.characters?.length || 0) * 3, 0, 100);
   const localizationScore = clamp(82 - (params.humiliation > 88 ? 6 : 0), 0, 100);
   const productionScore = clamp(Math.round((hookScore + reversalScore + params.conflict) / 3), 0, 100);
-  const complianceScore = clamp(91 - (params.humiliation > 85 ? 5 : 0) - (params.conflict > 90 ? 4 : 0), 0, 100);
+  const complianceScore = version.complianceReport?.riskScore ?? clamp(91 - (params.humiliation > 85 ? 5 : 0) - (params.conflict > 90 ? 4 : 0), 0, 100);
+  const similarityScore = clamp(100 - Math.round((version.similarityReport?.maxSimilarity || 0) * 100), 0, 100);
   const total = Math.round(
     hookScore * 0.2 +
       emotionScore * 0.16 +
@@ -37,7 +198,8 @@ export function scoreScript(version) {
       characterScore * 0.12 +
       localizationScore * 0.12 +
       productionScore * 0.14 +
-      complianceScore * 0.1,
+      complianceScore * 0.07 +
+      similarityScore * 0.03,
   );
 
   return {
@@ -49,7 +211,8 @@ export function scoreScript(version) {
       { name: "人设清晰", score: characterScore, note: "核心人物关系已成型，拍摄前可继续补动机。" },
       { name: "本地化", score: localizationScore, note: version.marketRisk },
       { name: "投流可剪辑", score: productionScore, note: "可拆出开场羞辱、身份揭露和反击三类素材。" },
-      { name: "合规风险", score: complianceScore, note: complianceScore > 86 ? "当前未发现明显高风险设定。" : "建议降低暴力、歧视或极端羞辱表达。" },
+      { name: "合规风险", score: complianceScore, note: version.complianceReport?.level || (complianceScore > 86 ? "当前未发现明显高风险设定。" : "建议降低暴力、歧视或极端羞辱表达。") },
+      { name: "相似度", score: similarityScore, note: version.similarityReport?.level || "与当前项目版本保持区分。" },
     ],
     suggestions: [
       "第 1 集 20 秒内加入可视化证据，例如协议、录音或公开名单。",
@@ -181,10 +344,7 @@ export function generateVersion({ brief, params, source = "AI生成", templateCa
       "口播钩子：如果你被最亲近的人背叛，会选择解释，还是翻盘？",
     ],
   };
-  return {
-    ...version,
-    score: scoreScript(version),
-  };
+  return enrichVersion(version);
 }
 
 export function createProject({ brief, params, templateCatalog = templates }) {
@@ -244,10 +404,7 @@ export function normalizeAiVersion({ brief, params, payload, usage, model, sourc
     adHooks: safeArray(payload.adHooks, localFallback.adHooks),
   };
 
-  return {
-    ...version,
-    score: scoreScript(version),
-  };
+  return enrichVersion(version);
 }
 
 export function createProjectFromVersion({ brief, version, notice }) {
@@ -271,6 +428,7 @@ export function createProjectFromVersion({ brief, version, notice }) {
     ],
     exports: [],
     campaignResults: [],
+    interactiveExperiences: [],
   };
 }
 
@@ -293,17 +451,53 @@ export function buildRewriteParams(activeParams, instruction = "") {
 export function rewriteVersion(project, instruction, templateCatalog = templates) {
   const active = project.versions.find((version) => version.id === project.activeVersionId) || project.versions[0];
   const nextParams = buildRewriteParams(active.parameters, instruction);
-  const next = generateVersion({
+  const next = enrichVersion(generateVersion({
     brief: project.brief,
     params: nextParams,
     source: instruction || "段落重写",
     templateCatalog,
-  });
+  }), project.versions);
   next.name = `${instruction || "重写版本"} ${project.versions.length + 1}`;
   return {
     ...project,
     activeVersionId: next.id,
     updatedAt: new Date().toISOString(),
     versions: [next, ...project.versions],
+  };
+}
+
+export function createInteractiveExperience({ project, version, mood = "想看主角翻盘", persona = "普通观众" }) {
+  const sourceVersion = version || project?.versions?.find((item) => item.id === project?.activeVersionId) || project?.versions?.[0] || {};
+  const episodes = sourceVersion.episodes || [];
+  const choices = episodes.slice(0, 3).map((episode, index) => ({
+    id: uid("choice"),
+    episodeNumber: episode.number || index + 1,
+    setup: episode.hook || episode.title || "关键冲突出现",
+    options: [
+      {
+        label: "公开反击",
+        outcome: `主角当场拿出证据，情绪爽点提前释放，但会引出更强对手。`,
+        nextBeat: "进入公开清算线。",
+      },
+      {
+        label: "暂时隐忍",
+        outcome: `主角保留证据继续套话，悬念更强，适合拉长留存。`,
+        nextBeat: "进入证据收集线。",
+      },
+      {
+        label: "转向关系",
+        outcome: `主角先处理关键关系误会，情感补偿更明显。`,
+        nextBeat: "进入情绪修复线。",
+      },
+    ],
+  }));
+  return {
+    id: uid("interactive"),
+    name: `${sourceVersion.selectedTitle || project?.name || "互动短剧"} 体验`,
+    mood,
+    persona,
+    opening: `${persona}进入「${mood}」状态后，系统从${sourceVersion.templateName || "当前模板"}里抽取强冲突桥段，生成三段可选择剧情。`,
+    choices,
+    createdAt: new Date().toISOString(),
   };
 }

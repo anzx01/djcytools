@@ -72,6 +72,11 @@ DJCYTOOLS_ADMIN_EMAIL=admin@djcytools.local
 DJCYTOOLS_ADMIN_PASSWORD=DJCYTools@2026
 DJCYTOOLS_ADMIN_NAME=DJCYTools 管理员
 DJCYTOOLS_TEAM_NAME=出海短剧实验室
+DJCYTOOLS_APP_URL=http://127.0.0.1:4173
+DJCYTOOLS_PUBLIC_API_TOKEN=change-me-for-third-party-workflows
+DJCYTOOLS_PUBLIC_API_BASE_URL=http://127.0.0.1:4173
+# 可选：用于多实例迁移预案识别
+DJCYTOOLS_DATABASE_URL=postgresql://user:pass@host:5432/djcytools
 ```
 
 `.env` 已被 `.gitignore` 忽略。DeepSeek API Key 只在服务端代理中使用，不会打进前端 bundle。
@@ -91,19 +96,33 @@ DJCYTOOLS_TEAM_NAME=出海短剧实验室
 - 模板预览：在生成表单中直接查看模板类型、热度、钩子和标签
 - 投流钩子编辑：生成后可直接调整卖点卡和广告开场钩子
 - 版本实验：版本保存、版本切换、版本对比、来源标记
-- AI 评分：钩子、情绪、反转、人设、本地化、投流可剪辑、合规风险
+- AI 评分：钩子、情绪、反转、人设、本地化、投流可剪辑、合规风险、版本相似度
+- 分镜建议：每集自动生成 0-10s、10-45s、45-90s 的画面、镜头、声音和道具建议
+- 合规与相似度检测：命中未成年、自伤、毒品、性暴力、歧视、高羞辱/高冲突等规则，并对同项目版本做重复度提示
+- 互动短剧体验：基于当前版本生成 C 端用户画像、情绪状态和三段互动选择点
 - 投流结果回流：按版本记录渠道、素材、花费、曝光、点击、完播、转化、收入，并自动计算 CTR、完播率、CPA、ROAS
 - 60 个热门模板，按类型和热度排序
-- 模板库管理：复制当前模板、保存团队自定义模板、编辑/删除自定义模板
-- 趋势看板：情绪标签、模板信号、市场提示
+- 模板库管理：复制当前模板、保存团队自定义模板、编辑/删除自定义模板、安装社区模板
+- 模板效果回流：根据投流结果聚合模板 ROAS、CTR、完播率，并同步影响趋势信号
+- 趋势看板：情绪标签、模板信号、市场提示，可结合团队投流回流刷新，并支持导入趋势快照 JSON
 - 账号与权限：登录、HttpOnly 会话、用户表、团队表、所有者/编辑者/查看者角色、接口鉴权
 - 邮箱注册：新邮箱注册后自动创建个人团队，并以所有者身份进入工作台
 - 团队权限：团队名、成员、角色编辑；非所有者只能查看团队配置
+- 团队成员管理 API：所有者可真实更新成员姓名、角色和移除成员，并保护最后一个所有者
+- 团队邀请：所有者生成邀请 Token，成员可在登录页接受邀请并加入团队
+- 本地通知发件箱：邀请 Token、重置 Token 会进入可审计的本地投递队列，所有者可复制正文并标记已发送/失败
+- 密码重置：本地 MVP 可申请重置 Token 并设置新密码，后续可把通知发件箱接入邮件或企业 IM
+- 登录后改密：账号安全面板支持验证当前密码、设置新密码并清理其他会话
+- 操作审计：记录登录、注册、邀请、工作区保存、项目 CRUD、AI 调用和第三方导出等关键动作
 - 导出：TXT / PDF / DOC / JSON
+- 第三方交付 API：通过 `DJCYTOOLS_PUBLIC_API_TOKEN` 读取项目 JSON，并支持外部投流系统回写效果数据
+- 交付接口面板：展示 Public API 配置状态、OpenAPI 地址、当前项目导出地址和 cURL 示例
+- 团队 API Token：所有者可在工作台生成/撤销团队级交付 Token；数据库只保存哈希，Token 明文只显示一次
 - 工作区备份与恢复：导出/导入完整 JSON 工作区
 - 工作区归一化：旧缓存、服务端数据、备份导入都会补齐团队、设置、自定义模板和活跃项目字段
 - 项目管理：项目列表查询、搜索筛选、新建草稿、项目改名、状态流转、单项目读取和删除
 - SQLite 持久化：用户、团队、项目、版本、评论、导出、投流结果、自定义模板、AI 日志、访问埋点拆表
+- 多实例迁移预案：工作台提供 PostgreSQL 迁移计划、表清单和当前团队 SQL 迁移包下载
 - JSON 迁移：首次启动会把旧 `data/workspace.json`、`data/ai-logs.json`、`data/analytics.json` 导入 SQLite
 - 数据埋点：匿名记录落地页和工作台访问量、独立访客、最近访问时间，并在工作台运行状态展示
 - AI 调用日志：模型、token、耗时、估算成本、成功/失败状态
@@ -162,7 +181,11 @@ GET  /api/health
 GET  /api/auth/session
 POST /api/auth/login
 POST /api/auth/register
+POST /api/auth/invite/accept
+POST /api/auth/password-reset/request
+POST /api/auth/password-reset/confirm
 POST /api/auth/logout
+PATCH /api/account/password
 GET  /api/workspace
 PUT  /api/workspace
 GET  /api/projects
@@ -171,9 +194,37 @@ GET  /api/projects/:id
 PATCH /api/projects/:id
 DELETE /api/projects/:id
 GET  /api/ai-logs
+GET  /api/audit-logs
+GET  /api/notifications/outbox
+PATCH /api/notifications/outbox/:id
 GET  /api/analytics/summary
 POST /api/analytics/event
+GET  /api/team/invites
+POST /api/team/invites
+PATCH /api/team/members/:id
+DELETE /api/team/members/:id
+GET  /api/api-tokens
+POST /api/api-tokens
+DELETE /api/api-tokens/:id
+GET  /api/templates/insights
+GET  /api/trends/summary
+GET  /api/trends/snapshots
+POST /api/trends/snapshots
+GET  /api/storage/migration-plan
+GET  /api/storage/postgres-export
 POST /api/generate-script
+GET  /api/public/openapi.json
+GET  /api/public/health
+GET  /api/public/projects
+GET  /api/public/projects/:id/export
+POST /api/public/projects/:id/campaign-results
+```
+
+公开交付 API 支持两种鉴权方式：
+
+```text
+Authorization: Bearer <DJCYTOOLS_PUBLIC_API_TOKEN>
+X-DJCYTOOLS-API-KEY: <DJCYTOOLS_PUBLIC_API_TOKEN>
 ```
 
 运行期数据写入：
@@ -199,11 +250,11 @@ src/App.jsx                  工作台主应用
 src/components/workbench/    工作台面板组件
 src/data/templates.js        60 个模板和市场配置
 src/data/trends.js           趋势和模板信号
-src/lib/generator.js         本地生成、评分、版本工具
+src/lib/generator.js         本地生成、评分、分镜、合规、相似度、互动体验工具
 src/lib/deepseekClient.js    前端调用 DeepSeek 代理
-src/lib/workspaceApi.js      前端工作区、项目 CRUD、AI 日志和埋点 API
+src/lib/workspaceApi.js      前端工作区、项目 CRUD、团队安全、趋势、AI 日志和埋点 API
 server/apiCore.mjs           共享 API 内核
-server/database.mjs          SQLite schema、迁移、会话和权限
+server/database.mjs          SQLite schema、迁移、会话、邀请、密码重置、审计和权限
 server.mjs                   生产服务器
 vite.config.js               开发服务器与 API 插件
 ```
@@ -225,12 +276,19 @@ curl -c cookies.txt -H "Content-Type: application/json" -d "{\"email\":\"admin@d
 curl -c cookies.txt -H "Content-Type: application/json" -d "{\"email\":\"new@djcytools.local\",\"password\":\"DJCYTools@2026\",\"name\":\"新用户\",\"teamName\":\"新团队\"}" http://127.0.0.1:4173/api/auth/register
 curl -b cookies.txt http://127.0.0.1:4173/api/workspace
 curl -b cookies.txt http://127.0.0.1:4173/api/ai-logs
+curl -b cookies.txt http://127.0.0.1:4173/api/audit-logs
+curl -b cookies.txt http://127.0.0.1:4173/api/trends/summary
 curl -b cookies.txt http://127.0.0.1:4173/api/analytics/summary
+curl -b cookies.txt http://127.0.0.1:4173/api/storage/postgres-export
+curl http://127.0.0.1:4173/api/public/openapi.json
+curl -H "X-DJCYTOOLS-API-KEY: change-me-for-third-party-workflows" http://127.0.0.1:4173/api/public/health
+curl -H "X-DJCYTOOLS-API-KEY: change-me-for-third-party-workflows" http://127.0.0.1:4173/api/public/projects
+curl -X POST -H "Content-Type: application/json" -H "X-DJCYTOOLS-API-KEY: change-me-for-third-party-workflows" -d "{\"channel\":\"Meta Ads\",\"spend\":120,\"impressions\":18000,\"clicks\":720,\"completions\":3200,\"conversions\":24,\"revenue\":360}" http://127.0.0.1:4173/api/public/projects/<project-id>/campaign-results
 ```
 
-## 后续建议
+## 生产化建议
 
-- 增加团队邀请、重置密码和操作审计
-- 多实例部署时将 SQLite 升级为 PostgreSQL
-- 增加模板后台管理和模板效果回流
-- 增加更细的合规审核和相似度检测
+- 接入 SMTP 或企业 IM，把本地通知发件箱中的邀请/重置消息自动投递出去
+- 接入真实平台榜单、广告素材库或 BI，把静态趋势和团队投流回流合并成每日更新数据源
+- 多实例正式上线时按工作台迁移预案切换 PostgreSQL，并补充云端备份和恢复流程
+- 合规审核接入人工复核或专业内容安全服务，当前规则适合 MVP 预筛

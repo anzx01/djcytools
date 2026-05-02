@@ -96,7 +96,7 @@ const benefits = [
   {
     icon: Database,
     title: "本地持久化可迁移",
-    text: "当前使用 JSON 工作区与 AI 日志，后续可以平滑升级到 PostgreSQL 或云端数据服务。",
+    text: "当前使用 SQLite 拆表保存账号、项目、版本、投流、审计和日志，并提供 PostgreSQL 迁移预案。",
   },
   {
     icon: Users2,
@@ -107,11 +107,11 @@ const benefits = [
 
 const proof = [
   "DeepSeek 生成与定向改写",
-  "服务端 JSON 持久化",
+  "SQLite 持久化与审计",
   "AI 调用日志与成本统计",
   "TXT / PDF / DOC / JSON 导出",
-  "团队成员与角色管理",
-  "模板按类型和热度排序",
+  "团队邀请与密码重置",
+  "模板效果回流与分镜建议",
 ];
 
 const testimonials = [
@@ -148,7 +148,7 @@ const faqItems = [
   },
   {
     question: "模板能继续扩展吗？",
-    answer: "能。内置模板已经按类型和热度组织，也支持在工作台里复制当前模板、保存团队自定义模板、编辑和删除自定义模板。",
+    answer: "能。内置模板已经按类型和热度组织，也支持复制当前模板、保存团队模板、安装社区模板，并用投流数据回流模板效果。",
   },
   {
     question: "生成结果一定是中文吗？",
@@ -160,7 +160,7 @@ const faqItems = [
   },
   {
     question: "后续接账号和数据库会推倒重来吗？",
-    answer: "不需要。API 内核已经独立在服务端，当前 JSON 持久化可以作为迁移前的本地存储层。",
+    answer: "不需要。API 内核已经独立在服务端，当前 SQLite 拆表覆盖账号、团队、项目和审计，多实例上线时可按迁移预案切换 PostgreSQL。",
   },
 ];
 

@@ -22,6 +22,7 @@ export function normalizeWorkspace(value) {
       exports: Array.isArray(project.exports) ? project.exports : [],
       versions: Array.isArray(project.versions) ? project.versions : [],
       campaignResults: Array.isArray(project.campaignResults) ? project.campaignResults : [],
+      interactiveExperiences: Array.isArray(project.interactiveExperiences) ? project.interactiveExperiences : [],
     };
     return {
       ...normalizedProject,

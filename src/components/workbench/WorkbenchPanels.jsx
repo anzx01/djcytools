@@ -9,11 +9,17 @@ import {
   FileText,
   Flame,
   FolderOpen,
+  GitFork,
+  KeyRound,
+  MailPlus,
   MessageSquare,
+  MonitorPlay,
   Plus,
   RefreshCcw,
   Save,
   Search,
+  ShieldAlert,
+  Store,
   Trash2,
   X,
 } from "lucide-react";
@@ -30,6 +36,13 @@ function formatDate(value) {
     minute: "2-digit",
   });
 }
+
+const deliveryStatusLabels = {
+  queued: "待发送",
+  sent: "已发送",
+  failed: "失败",
+  expired: "已失效",
+};
 
 export function ErrorNotice({ error, onClose }) {
   return (
@@ -658,7 +671,13 @@ export function VersionPanel({ project, activeVersion, compareVersion, compareVe
   );
 }
 
-export function TrendPanel({ setDraftBrief }) {
+export function TrendPanel({ setDraftBrief, trendSummary, trendSnapshots, canImportTrends, onRefreshTrends, onImportTrendSnapshot }) {
+  const tags = trendSummary?.tags || trendTags;
+  const signals = trendSummary?.templateSignals || templateSignals;
+  const notes = trendSummary?.marketNotes || marketNotes;
+  const updatedAt = trendSummary?.lastUpdated ? formatDate(trendSummary.lastUpdated) : lastTrendUpdated;
+  const [trendDraft, setTrendDraft] = useState("");
+
   function applyTag(tag) {
     setDraftBrief((brief) => ({
       ...brief,
@@ -668,9 +687,15 @@ export function TrendPanel({ setDraftBrief }) {
 
   return (
     <div className="trend-panel">
-      <p className="timestamp">更新：{lastTrendUpdated}</p>
+      <div className="panel-inline-head">
+        <p className="timestamp">更新：{updatedAt} · {trendSummary?.source || "static-seed"}</p>
+        <button className="mini-action" type="button" onClick={onRefreshTrends}>
+          <RefreshCcw size={13} />
+          刷新
+        </button>
+      </div>
       <div className="trend-list">
-        {trendTags.map((tag) => (
+        {tags.map((tag) => (
           <button type="button" className="trend-row" key={`${tag.tag}-${tag.market}`} onClick={() => applyTag(tag)}>
             <span>
               <b>{tag.tag}</b>
@@ -684,22 +709,56 @@ export function TrendPanel({ setDraftBrief }) {
         ))}
       </div>
       <div className="signal-grid">
-        {templateSignals.map((signal) => (
+        {signals.map((signal) => (
           <div className="signal" key={signal.name}>
             <b>{signal.name}</b>
-            <span>保存 {signal.saveRate}%</span>
-            <span>导出 {signal.exportRate}%</span>
+            <span>{signal.campaigns ? `投流 ${signal.campaigns} 次` : `保存 ${signal.saveRate}%`}</span>
+            <span>{signal.avgRoas ? `ROAS ${signal.avgRoas}x` : `导出 ${signal.exportRate}%`}</span>
             <strong>{signal.score}</strong>
           </div>
         ))}
       </div>
       <div className="market-note-list">
-        {marketNotes.map((note) => (
+        {notes.map((note) => (
           <p key={note.market}>
             <b>{note.market}</b>
             {note.note}
           </p>
         ))}
+      </div>
+      <div className="trend-import-box">
+        <label>
+          导入趋势快照 JSON
+          <textarea
+            rows={4}
+            value={trendDraft}
+            onChange={(event) => setTrendDraft(event.target.value)}
+            placeholder='{"source":"manual","tags":[...],"templateSignals":[...],"marketNotes":[...]}'
+            disabled={!canImportTrends}
+          />
+        </label>
+        <button
+          className="secondary-action strong"
+          type="button"
+          disabled={!canImportTrends || !trendDraft.trim()}
+          onClick={() => {
+            onImportTrendSnapshot(trendDraft);
+            setTrendDraft("");
+          }}
+        >
+          <Download size={15} />
+          导入快照
+        </button>
+      </div>
+      <div className="snapshot-list">
+        {(trendSnapshots || []).slice(0, 4).map((snapshot) => (
+          <p key={snapshot.id}>
+            <b>{snapshot.source}</b>
+            {snapshot.tags?.length || 0} 标签 · {snapshot.templateSignals?.length || 0} 模板信号
+            <small>{formatDate(snapshot.createdAt)}</small>
+          </p>
+        ))}
+        {(!trendSnapshots || trendSnapshots.length === 0) && <p className="muted-note">暂无导入快照，当前使用内置趋势种子。</p>}
       </div>
     </div>
   );
@@ -758,7 +817,7 @@ export function DeliveryPanel({ project, commentText, setCommentText, addComment
   );
 }
 
-export function TeamPanel({ workspace, setWorkspace, canManageTeam = true }) {
+export function TeamPanel({ workspace, setWorkspace, canManageTeam = true, onUpdateMember, onRemoveMember }) {
   const members = workspace.team?.members || [];
 
   function patchTeam(patcher) {
@@ -777,6 +836,11 @@ export function TeamPanel({ workspace, setWorkspace, canManageTeam = true }) {
     }));
   }
 
+  function commitMember(member) {
+    if (!canManageTeam || !member?.id || !onUpdateMember) return;
+    onUpdateMember(member.id, { name: member.name, role: member.role });
+  }
+
   function addMember() {
     if (!canManageTeam) return;
     patchTeam((team) => ({
@@ -787,6 +851,11 @@ export function TeamPanel({ workspace, setWorkspace, canManageTeam = true }) {
 
   function removeMember(index) {
     if (!canManageTeam) return;
+    const member = members[index];
+    if (member?.id && onRemoveMember) {
+      onRemoveMember(member.id, member);
+      return;
+    }
     patchTeam((team) => ({
       ...team,
       members: team.members.filter((_, itemIndex) => itemIndex !== index),
@@ -806,8 +875,20 @@ export function TeamPanel({ workspace, setWorkspace, canManageTeam = true }) {
       <div className="member-list">
         {members.map((member, index) => (
           <div className="member-row" key={`${member.name}-${index}`}>
-            <input value={member.name} onChange={(event) => updateMember(index, "name", event.target.value)} disabled={!canManageTeam} />
-            <select value={member.role} onChange={(event) => updateMember(index, "role", event.target.value)} disabled={!canManageTeam}>
+            <input
+              value={member.name}
+              onChange={(event) => updateMember(index, "name", event.target.value)}
+              onBlur={() => commitMember(members[index])}
+              disabled={!canManageTeam}
+            />
+            <select
+              value={member.role}
+              onChange={(event) => {
+                updateMember(index, "role", event.target.value);
+                commitMember({ ...member, role: event.target.value });
+              }}
+              disabled={!canManageTeam}
+            >
               <option>所有者</option>
               <option>编辑者</option>
               <option>查看者</option>
@@ -823,6 +904,515 @@ export function TeamPanel({ workspace, setWorkspace, canManageTeam = true }) {
         <Plus size={15} />
         添加成员
       </button>
+    </div>
+  );
+}
+
+export function SecurityPanel({
+  canManageTeam,
+  inviteState,
+  notificationState,
+  auditState,
+  migrationPlan,
+  onCreateInvite,
+  onUpdateNotificationDelivery,
+  onRefreshSecurity,
+}) {
+  const [inviteDraft, setInviteDraft] = useState({ email: "", name: "", role: "editor" });
+  const notifications = notificationState?.notifications || [];
+
+  function submitInvite(event) {
+    event.preventDefault();
+    if (!canManageTeam || !inviteDraft.email.trim()) return;
+    onCreateInvite(inviteDraft);
+    setInviteDraft({ email: "", name: "", role: "editor" });
+  }
+
+  return (
+    <div className="security-panel">
+      <div className="panel-inline-head">
+        <span className="timestamp">团队安全、邀请与审计</span>
+        <button className="mini-action" type="button" onClick={onRefreshSecurity} disabled={!canManageTeam}>
+          <RefreshCcw size={13} />
+          刷新
+        </button>
+      </div>
+      <form className="invite-form" onSubmit={submitInvite}>
+        <div className="two-col">
+          <label>
+            邀请邮箱
+            <input
+              type="email"
+              value={inviteDraft.email}
+              onChange={(event) => setInviteDraft({ ...inviteDraft, email: event.target.value })}
+              disabled={!canManageTeam}
+            />
+          </label>
+          <label>
+            姓名
+            <input
+              value={inviteDraft.name}
+              onChange={(event) => setInviteDraft({ ...inviteDraft, name: event.target.value })}
+              disabled={!canManageTeam}
+            />
+          </label>
+        </div>
+        <div className="two-col">
+          <label>
+            角色
+            <select
+              value={inviteDraft.role}
+              onChange={(event) => setInviteDraft({ ...inviteDraft, role: event.target.value })}
+              disabled={!canManageTeam}
+            >
+              <option value="editor">编辑者</option>
+              <option value="viewer">查看者</option>
+            </select>
+          </label>
+          <button className="secondary-action strong" type="submit" disabled={!canManageTeam}>
+            <MailPlus size={15} />
+            生成邀请
+          </button>
+        </div>
+      </form>
+
+      {inviteState.lastInvite?.token && (
+        <div className="copy-block">
+          <b>邀请 Token</b>
+          <code>{inviteState.lastInvite.token}</code>
+          <small>复制给成员后，可在登录页“接受邀请”中加入团队。</small>
+        </div>
+      )}
+
+      <div className="security-list">
+        {(inviteState.invites || []).slice(0, 5).map((invite) => (
+          <p key={invite.id}>
+            <b>{invite.email}</b>
+            {invite.role} · {invite.status}
+            <small>{formatDate(invite.createdAt)} 到期 {formatDate(invite.expiresAt)}</small>
+          </p>
+        ))}
+        {(!inviteState.invites || inviteState.invites.length === 0) && <p className="muted-note">暂无团队邀请。</p>}
+      </div>
+
+      <div className="notification-outbox">
+        <div className="panel-inline-head">
+          <span className="timestamp">本地通知发件箱</span>
+          <span className="timestamp">{notifications.filter((item) => item.status === "queued").length} 条待发送</span>
+        </div>
+        {notifications.slice(0, 6).map((notification) => (
+          <article className="notification-item" key={notification.id}>
+            <div className="notification-meta">
+              <MessageSquare size={15} />
+              <div>
+                <b>{notification.subject}</b>
+                <span>{notification.recipient}</span>
+              </div>
+              <em className={`delivery-status ${notification.status}`}>
+                {deliveryStatusLabels[notification.status] || notification.status}
+              </em>
+            </div>
+            <pre className="notification-body">{notification.body}</pre>
+            <div className="notification-actions">
+              <small>{formatDate(notification.createdAt)}</small>
+              <button
+                className="mini-action"
+                type="button"
+                onClick={() => onUpdateNotificationDelivery(notification.id, "sent")}
+                disabled={!canManageTeam || notification.status === "sent"}
+              >
+                <Check size={13} />
+                已发送
+              </button>
+              <button
+                className="mini-action danger-mini"
+                type="button"
+                onClick={() => onUpdateNotificationDelivery(notification.id, "failed")}
+                disabled={!canManageTeam || notification.status === "failed"}
+              >
+                <AlertTriangle size={13} />
+                失败
+              </button>
+            </div>
+          </article>
+        ))}
+        {notifications.length === 0 && <p className="muted-note">暂无待投递通知；生成邀请或重置密码后会自动进入这里。</p>}
+      </div>
+
+      <div className="migration-card">
+        <KeyRound size={16} />
+        <div>
+          <b>PostgreSQL 迁移预案</b>
+          <span>{migrationPlan?.readyForMultiInstance ? "已配置 PostgreSQL 目标" : "当前仍使用 SQLite"}</span>
+          <small>{migrationPlan?.tables?.length || 0} 张表可迁移，详见 README 的部署说明。</small>
+        </div>
+      </div>
+
+      <div className="security-list audit-list">
+        {(auditState.logs || []).slice(0, 8).map((log) => (
+          <p key={log.id}>
+            <b>{log.action}</b>
+            {log.actor}
+            <small>{formatDate(log.createdAt)}</small>
+          </p>
+        ))}
+        {(!auditState.logs || auditState.logs.length === 0) && <p className="muted-note">暂无审计记录。</p>}
+      </div>
+    </div>
+  );
+}
+
+export function AccountSecurityPanel({ user, onChangePassword }) {
+  const [draft, setDraft] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
+  const canSubmit = draft.currentPassword && draft.newPassword.length >= 8 && draft.newPassword === draft.confirmPassword;
+
+  function submitPassword(event) {
+    event.preventDefault();
+    if (!canSubmit) return;
+    onChangePassword({ currentPassword: draft.currentPassword, newPassword: draft.newPassword });
+    setDraft({ currentPassword: "", newPassword: "", confirmPassword: "" });
+  }
+
+  return (
+    <div className="account-security-panel">
+      <div className="migration-card">
+        <KeyRound size={16} />
+        <div>
+          <b>{user?.email || "当前账号"}</b>
+          <span>修改密码后会保留当前会话，并清理其他已登录会话。</span>
+        </div>
+      </div>
+      <form className="invite-form" onSubmit={submitPassword}>
+        <label>
+          当前密码
+          <input
+            type="password"
+            value={draft.currentPassword}
+            onChange={(event) => setDraft({ ...draft, currentPassword: event.target.value })}
+            autoComplete="current-password"
+          />
+        </label>
+        <label>
+          新密码
+          <input
+            type="password"
+            value={draft.newPassword}
+            onChange={(event) => setDraft({ ...draft, newPassword: event.target.value })}
+            autoComplete="new-password"
+            minLength={8}
+          />
+        </label>
+        <label>
+          确认新密码
+          <input
+            type="password"
+            value={draft.confirmPassword}
+            onChange={(event) => setDraft({ ...draft, confirmPassword: event.target.value })}
+            autoComplete="new-password"
+            minLength={8}
+          />
+        </label>
+        {draft.confirmPassword && draft.newPassword !== draft.confirmPassword && <p className="muted-note">两次输入的新密码不一致。</p>}
+        <button className="secondary-action strong" type="submit" disabled={!canSubmit}>
+          <KeyRound size={15} />
+          更新密码
+        </button>
+      </form>
+    </div>
+  );
+}
+
+export function CompliancePanel({ version }) {
+  const compliance = version?.complianceReport || { level: "未检测", riskScore: 0, flags: [], suggestions: [] };
+  const similarity = version?.similarityReport || { level: "未检测", maxSimilarity: 0, matches: [] };
+  return (
+    <div className="compliance-panel">
+      <div className="compliance-grid">
+        <div>
+          <ShieldAlert size={17} />
+          <span>合规等级</span>
+          <strong>{compliance.level}</strong>
+          <small>{compliance.riskScore} / 100</small>
+        </div>
+        <div>
+          <GitFork size={17} />
+          <span>相似度</span>
+          <strong>{similarity.level}</strong>
+          <small>{Math.round((similarity.maxSimilarity || 0) * 100)}%</small>
+        </div>
+      </div>
+      <div className="security-list">
+        {(compliance.flags || []).map((flag) => (
+          <p key={`${flag.label}-${flag.keyword}`}>
+            <b>{flag.label}</b>
+            {flag.suggestion}
+          </p>
+        ))}
+        {(!compliance.flags || compliance.flags.length === 0) && <p className="muted-note">未命中高风险规则。</p>}
+      </div>
+      <div className="security-list">
+        {(similarity.matches || []).map((match) => (
+          <p key={match.versionId}>
+            <b>{match.versionName}</b>
+            相似 {Math.round(match.similarity * 100)}%
+            <small>{(match.sharedTokens || []).join(" / ")}</small>
+          </p>
+        ))}
+        {(!similarity.matches || similarity.matches.length === 0) && <p className="muted-note">暂无可比较版本。</p>}
+      </div>
+    </div>
+  );
+}
+
+export function StoryboardPanel({ version }) {
+  const storyboards = version?.storyboards || [];
+  return (
+    <div className="storyboard-panel">
+      {storyboards.map((board) => (
+        <article key={`${board.episodeNumber}-${board.title}`}>
+          <div className="storyboard-head">
+            <MonitorPlay size={16} />
+            <b>第 {board.episodeNumber} 集</b>
+            <span>{board.title}</span>
+          </div>
+          {(board.shots || []).map((shot) => (
+            <div className="shot-row" key={`${board.episodeNumber}-${shot.time}`}>
+              <strong>{shot.time}</strong>
+              <p>{shot.frame}</p>
+              <small>{shot.camera} · {shot.sound} · {shot.prop}</small>
+            </div>
+          ))}
+        </article>
+      ))}
+      {storyboards.length === 0 && <p className="muted-note">生成或改写版本后会自动补充分镜建议。</p>}
+    </div>
+  );
+}
+
+export function InteractivePanel({ project, activeVersion, onCreateInteractiveExperience }) {
+  const [draft, setDraft] = useState({ mood: "想看主角翻盘", persona: "下班后刷剧的女性观众" });
+  const experiences = project?.interactiveExperiences || [];
+  return (
+    <div className="interactive-panel">
+      <div className="interactive-form">
+        <label>
+          情绪状态
+          <input value={draft.mood} onChange={(event) => setDraft({ ...draft, mood: event.target.value })} />
+        </label>
+        <label>
+          用户画像
+          <input value={draft.persona} onChange={(event) => setDraft({ ...draft, persona: event.target.value })} />
+        </label>
+        <button className="secondary-action strong" type="button" onClick={() => onCreateInteractiveExperience(draft)}>
+          <Plus size={15} />
+          生成互动体验
+        </button>
+      </div>
+      <div className="security-list">
+        {experiences.slice(0, 4).map((experience) => (
+          <p key={experience.id}>
+            <b>{experience.name}</b>
+            {experience.persona} · {experience.mood}
+            <small>{experience.choices?.length || 0} 个选择点 · {formatDate(experience.createdAt)}</small>
+          </p>
+        ))}
+        {experiences.length === 0 && <p className="muted-note">可基于当前版本生成 C 端互动短剧雏形。</p>}
+      </div>
+      {activeVersion && <p className="muted-note">当前来源：{activeVersion.selectedTitle || activeVersion.name}</p>}
+    </div>
+  );
+}
+
+export function ApiHandoffPanel({
+  activeProject,
+  healthState,
+  migrationPlan,
+  apiTokenState,
+  canManageTokens,
+  onCreateApiToken,
+  onRevokeApiToken,
+  onDownloadPostgresExport,
+}) {
+  const [tokenName, setTokenName] = useState("制作流程 Token");
+  const projectId = activeProject?.id || "project_id";
+  const baseUrl = window.location.origin;
+  const publicHealth = `${baseUrl}/api/public/health`;
+  const publicList = `${baseUrl}/api/public/projects`;
+  const publicExport = `${baseUrl}/api/public/projects/${projectId}/export`;
+  const campaignWebhook = `${baseUrl}/api/public/projects/${projectId}/campaign-results`;
+  return (
+    <div className="api-handoff-panel">
+      <div className="compliance-grid">
+        <div>
+          <KeyRound size={17} />
+          <span>Public API</span>
+          <strong>{healthState?.publicApiConfigured || apiTokenState?.tokens?.some((token) => !token.revokedAt) ? "已配置" : "未配置"}</strong>
+          <small>环境变量或团队 Token</small>
+        </div>
+        <div>
+          <FileJson size={17} />
+          <span>OpenAPI</span>
+          <strong>JSON</strong>
+          <small>/api/public/openapi.json</small>
+        </div>
+      </div>
+      <div className="api-endpoint-list">
+        <label>
+          健康检查
+          <code>{publicHealth}</code>
+        </label>
+        <label>
+          项目列表
+          <code>{publicList}</code>
+        </label>
+        <label>
+          当前项目导出
+          <code>{publicExport}</code>
+        </label>
+        <label>
+          投流数据回写
+          <code>{campaignWebhook}</code>
+        </label>
+      </div>
+      <div className="copy-block">
+        <b>cURL 示例</b>
+        <code>{`curl -H "X-DJCYTOOLS-API-KEY: $DJCYTOOLS_PUBLIC_API_TOKEN" "${publicExport}"`}</code>
+        <code>{`curl -X POST -H "Content-Type: application/json" -H "X-DJCYTOOLS-API-KEY: $DJCYTOOLS_PUBLIC_API_TOKEN" -d '{"channel":"Meta Ads","spend":120,"impressions":18000,"clicks":720,"completions":3200,"conversions":24,"revenue":360}' "${campaignWebhook}"`}</code>
+      </div>
+      <form
+        className="invite-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onCreateApiToken(tokenName);
+          setTokenName("制作流程 Token");
+        }}
+      >
+        <label>
+          新建团队 API Token
+          <input value={tokenName} onChange={(event) => setTokenName(event.target.value)} disabled={!canManageTokens} />
+        </label>
+        <button className="secondary-action strong" type="submit" disabled={!canManageTokens || !tokenName.trim()}>
+          <KeyRound size={15} />
+          生成 Token
+        </button>
+      </form>
+      {apiTokenState?.lastToken?.token && (
+        <div className="copy-block">
+          <b>新 Token 只显示一次</b>
+          <code>{apiTokenState.lastToken.token}</code>
+          <small>关闭或刷新后只能看到前缀，需要重新生成。</small>
+        </div>
+      )}
+      <div className="security-list">
+        {(apiTokenState?.tokens || []).slice(0, 6).map((token) => (
+          <p key={token.id}>
+            <b>{token.name}</b>
+            {token.prefix} · {token.revokedAt ? "已撤销" : "可用"}
+            <small>
+              创建 {formatDate(token.createdAt)} · 最近使用 {token.lastUsedAt ? formatDate(token.lastUsedAt) : "暂无"}
+            </small>
+            {!token.revokedAt && (
+              <button className="mini-action danger-mini" type="button" onClick={() => onRevokeApiToken(token.id)} disabled={!canManageTokens}>
+                撤销
+              </button>
+            )}
+          </p>
+        ))}
+        {(!apiTokenState?.tokens || apiTokenState.tokens.length === 0) && <p className="muted-note">还没有团队 API Token。</p>}
+      </div>
+      <div className="migration-card">
+        <FileText size={16} />
+        <div>
+          <b>PostgreSQL SQL 迁移包</b>
+          <span>{migrationPlan?.readyForMultiInstance ? "目标数据库已配置" : "可先导出 SQL 包离线校验"}</span>
+          <small>包含当前团队项目、版本、模板、投流、AI 日志和审计记录。</small>
+        </div>
+      </div>
+      <button className="secondary-action strong" type="button" onClick={onDownloadPostgresExport}>
+        <Download size={15} />
+        下载 PostgreSQL SQL
+      </button>
+    </div>
+  );
+}
+
+const communityTemplates = [
+  {
+    id: "marketplace-contract-revenge",
+    name: "离婚协议反杀局",
+    type: "豪门复仇",
+    tags: ["协议", "公开反击", "身份揭露"],
+    premise: "女主在离婚签字现场发现资产转移证据，反手接管家族项目。",
+    lead: "被低估的前妻",
+    rival: "伪善继承人",
+    hook: "离婚协议刚签完，她拿出另一份收购确认书。",
+    beat: "公开羞辱、证据反杀、资产控制权、旧爱悔悟。",
+    defaultParams: { humiliation: 78, reversal: 86, sweet: 56, conflict: 82, hookDensity: 88 },
+    price: "免费",
+  },
+  {
+    id: "marketplace-live-mask",
+    name: "直播间假面女王",
+    type: "直播网红",
+    tags: ["直播事故", "反差人设", "投流强钩子"],
+    premise: "女主播被同行陷害翻车，却用直播事故揭开整条灰产链。",
+    lead: "冷静控场的主播",
+    rival: "买榜网红",
+    hook: "直播断流前 3 秒，她把后台交易记录投到大屏。",
+    beat: "流量误判、公开翻车、后台证据、品牌反转。",
+    defaultParams: { humiliation: 72, reversal: 90, sweet: 42, conflict: 78, hookDensity: 93 },
+    price: "模板积分 20",
+  },
+];
+
+export function TemplateMarketplacePanel({ workspace, setWorkspace, templateInsights, setDraftBrief, setDraftParams }) {
+  function installTemplate(template) {
+    const installed = {
+      ...template,
+      id: `custom-${uid("market")}`,
+      category: template.type,
+      heatRank: 880 + (workspace.customTemplates || []).length,
+      heatScore: 82,
+      isCustom: true,
+      marketplaceSourceId: template.id,
+      installedAt: new Date().toISOString(),
+    };
+    setWorkspace((current) => ({
+      ...current,
+      customTemplates: [installed, ...(current.customTemplates || [])],
+    }));
+    setDraftBrief((brief) => ({ ...brief, templateId: installed.id }));
+    setDraftParams(installed.defaultParams);
+  }
+
+  return (
+    <div className="marketplace-panel">
+      <div className="template-insight-list">
+        {(templateInsights || []).slice(0, 5).map((insight) => (
+          <div className="template-insight" key={insight.templateName}>
+            <b>{insight.templateName}</b>
+            <span>投流 {insight.campaigns} 次</span>
+            <strong>{insight.avgRoas}x</strong>
+            <small>CTR {insight.avgCtr}% · 完播 {insight.avgCompletionRate}%</small>
+          </div>
+        ))}
+        {(!templateInsights || templateInsights.length === 0) && <p className="muted-note">投流回流后，这里会按模板聚合效果。</p>}
+      </div>
+      <div className="market-template-list">
+        {communityTemplates.map((template) => (
+          <article key={template.id}>
+            <div>
+              <Store size={16} />
+              <b>{template.name}</b>
+              <span>{template.type} · {template.price}</span>
+            </div>
+            <p>{template.hook}</p>
+            <button className="secondary-action" type="button" onClick={() => installTemplate(template)}>
+              安装模板
+            </button>
+          </article>
+        ))}
+      </div>
     </div>
   );
 }

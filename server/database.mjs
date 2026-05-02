@@ -187,6 +187,71 @@ function initSchema(db) {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS team_invites (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL,
+      invited_email TEXT NOT NULL,
+      invited_name TEXT,
+      role TEXT NOT NULL,
+      token_hash TEXT UNIQUE NOT NULL,
+      created_by_user_id TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      expires_at TEXT NOT NULL,
+      accepted_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE,
+      FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS password_reset_tokens (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      token_hash TEXT UNIQUE NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS notification_outbox (
+      id TEXT PRIMARY KEY,
+      team_id TEXT,
+      user_id TEXT,
+      kind TEXT NOT NULL,
+      channel TEXT NOT NULL DEFAULT 'local_outbox',
+      recipient TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      body TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'queued',
+      target_type TEXT,
+      target_id TEXT,
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      created_by_user_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sent_at TEXT,
+      FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS public_api_tokens (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      token_hash TEXT UNIQUE NOT NULL,
+      token_prefix TEXT NOT NULL,
+      created_by_user_id TEXT,
+      last_used_at TEXT,
+      revoked_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE,
+      FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+    );
+
     CREATE TABLE IF NOT EXISTS projects (
       id TEXT PRIMARY KEY,
       team_id TEXT NOT NULL,
@@ -292,10 +357,42 @@ function initSchema(db) {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS trend_snapshots (
+      id TEXT PRIMARY KEY,
+      team_id TEXT,
+      source TEXT NOT NULL,
+      tags_json TEXT NOT NULL DEFAULT '[]',
+      template_signals_json TEXT NOT NULL DEFAULT '[]',
+      market_notes_json TEXT NOT NULL DEFAULT '[]',
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id TEXT PRIMARY KEY,
+      team_id TEXT,
+      user_id TEXT,
+      action TEXT NOT NULL,
+      target_type TEXT,
+      target_id TEXT,
+      detail_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE SET NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_projects_team ON projects(team_id);
     CREATE INDEX IF NOT EXISTS idx_versions_project ON versions(project_id, position);
     CREATE INDEX IF NOT EXISTS idx_ai_logs_team_created ON ai_logs(team_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_analytics_page_created ON analytics_events(page, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_invites_team_status ON team_invites(team_id, status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_password_reset_user_status ON password_reset_tokens(user_id, status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_notification_outbox_team_status ON notification_outbox(team_id, status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_notification_outbox_user_created ON notification_outbox(user_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_public_api_tokens_team ON public_api_tokens(team_id, revoked_at, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_audit_team_created ON audit_logs(team_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_trend_snapshots_team_created ON trend_snapshots(team_id, created_at DESC);
   `);
 }
 
@@ -504,6 +601,7 @@ function stripProjectCollections(project) {
     comments: undefined,
     exports: undefined,
     campaignResults: undefined,
+    interactiveExperiences: undefined,
   };
 }
 
@@ -524,6 +622,7 @@ function normalizeProjectPayload(project, fallback = {}) {
     comments: Array.isArray(source.comments) ? source.comments : fallback.comments || [],
     exports: Array.isArray(source.exports) ? source.exports : fallback.exports || [],
     campaignResults: Array.isArray(source.campaignResults) ? source.campaignResults : fallback.campaignResults || [],
+    interactiveExperiences: Array.isArray(source.interactiveExperiences) ? source.interactiveExperiences : fallback.interactiveExperiences || [],
   };
   merged.activeVersionId = source.activeVersionId || fallback.activeVersionId || merged.versions[0]?.id || "";
   return merged;
@@ -564,6 +663,42 @@ function insertCustomTemplate(db, teamId, template) {
     template.createdAt || timestamp,
     template.updatedAt || timestamp,
   );
+}
+
+function normalizeCampaignResult(result = {}, fallback = {}) {
+  const timestamp = nowIso();
+  const source = result && typeof result === "object" ? result : {};
+  const impressions = Number(source.impressions || 0);
+  const clicks = Number(source.clicks || 0);
+  const completions = Number(source.completions || 0);
+  const conversions = Number(source.conversions || 0);
+  const spend = Number(source.spend || 0);
+  const revenue = Number(source.revenue || 0);
+  const metrics = source.metrics && typeof source.metrics === "object" ? source.metrics : {
+    ctr: impressions ? Number(((clicks / impressions) * 100).toFixed(2)) : 0,
+    completionRate: impressions ? Number(((completions / impressions) * 100).toFixed(2)) : 0,
+    conversionRate: clicks ? Number(((conversions / clicks) * 100).toFixed(2)) : 0,
+    cpa: conversions ? Number((spend / conversions).toFixed(2)) : 0,
+    roas: spend ? Number((revenue / spend).toFixed(2)) : 0,
+  };
+  return {
+    id: source.id || randomId("campaign"),
+    channel: String(source.channel || fallback.channel || "Public API").trim().slice(0, 80),
+    materialName: String(source.materialName || fallback.materialName || "外部回流素材").trim().slice(0, 120),
+    versionId: source.versionId || fallback.versionId || "",
+    versionName: source.versionName || fallback.versionName || "",
+    templateName: source.templateName || fallback.templateName || "",
+    spend,
+    impressions,
+    clicks,
+    completions,
+    conversions,
+    revenue,
+    materialUrl: String(source.materialUrl || "").trim().slice(0, 500),
+    note: String(source.note || "").trim().slice(0, 500),
+    metrics,
+    createdAt: source.createdAt || timestamp,
+  };
 }
 
 function migrateJsonIfNeeded(db, rootDir, env, bootstrap) {
@@ -935,6 +1070,948 @@ export function readAnalyticsSummaryFromDatabase(rootDir, env) {
   };
 }
 
+function invitePayload(row, token = "") {
+  return {
+    id: row.id,
+    email: row.invited_email,
+    name: row.invited_name || "",
+    role: roleLabel(row.role),
+    roleValue: normalizeRole(row.role),
+    status: row.status,
+    token,
+    expiresAt: row.expires_at,
+    acceptedAt: row.accepted_at || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function getAppEntryUrl(env = {}) {
+  const value = String(env.DJCYTOOLS_APP_URL || env.DJCYTOOLS_PUBLIC_API_BASE_URL || "http://127.0.0.1:4173").trim();
+  return value.includes("#") ? value : `${value.replace(/\/$/, "")}/#workbench`;
+}
+
+function notificationPayload(row) {
+  return {
+    id: row.id,
+    teamId: row.team_id || null,
+    userId: row.user_id || null,
+    kind: row.kind,
+    channel: row.channel,
+    recipient: row.recipient,
+    subject: row.subject,
+    body: row.body,
+    status: row.status,
+    targetType: row.target_type || "",
+    targetId: row.target_id || "",
+    payload: parseJson(row.payload_json, {}),
+    createdByUserId: row.created_by_user_id || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    sentAt: row.sent_at || null,
+  };
+}
+
+function insertNotificationOutboxEntry(
+  db,
+  {
+    teamId = null,
+    userId = null,
+    kind,
+    recipient,
+    subject,
+    body,
+    payload = {},
+    targetType = "",
+    targetId = "",
+    createdByUserId = null,
+    timestamp = nowIso(),
+  } = {},
+) {
+  if (!kind || !recipient || !subject || !body) return null;
+  const row = {
+    id: randomId("notification"),
+    team_id: teamId,
+    user_id: userId,
+    kind,
+    channel: "local_outbox",
+    recipient,
+    subject,
+    body,
+    status: "queued",
+    target_type: targetType,
+    target_id: targetId,
+    payload_json: jsonStringify(payload, {}),
+    created_by_user_id: createdByUserId,
+    created_at: timestamp,
+    updated_at: timestamp,
+    sent_at: null,
+  };
+  db.prepare(
+    `INSERT INTO notification_outbox(
+       id, team_id, user_id, kind, channel, recipient, subject, body, status,
+       target_type, target_id, payload_json, created_by_user_id, created_at, updated_at, sent_at
+     )
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    row.id,
+    row.team_id,
+    row.user_id,
+    row.kind,
+    row.channel,
+    row.recipient,
+    row.subject,
+    row.body,
+    row.status,
+    row.target_type,
+    row.target_id,
+    row.payload_json,
+    row.created_by_user_id,
+    row.created_at,
+    row.updated_at,
+    row.sent_at,
+  );
+  return notificationPayload(row);
+}
+
+function readPrimaryMembershipForUser(db, userId) {
+  return db
+    .prepare(
+      `SELECT team_members.team_id, teams.name AS team_name, team_members.role
+       FROM team_members
+       JOIN teams ON teams.id = team_members.team_id
+       WHERE team_members.user_id = ?
+       ORDER BY CASE team_members.role WHEN 'owner' THEN 0 WHEN 'editor' THEN 1 ELSE 2 END
+       LIMIT 1`,
+    )
+    .get(userId);
+}
+
+function buildInviteNotification({ env, session, invite, token }) {
+  return {
+    subject: `[DJCYTools] ${session.team.name} 邀请你加入团队`,
+    body: [
+      `${session.user.name || session.user.email} 邀请你以「${invite.role}」身份加入「${session.team.name}」。`,
+      `邀请邮箱：${invite.email}`,
+      `邀请 Token：${token}`,
+      `有效期至：${invite.expiresAt}`,
+      `入口：${getAppEntryUrl(env)}`,
+      "打开登录页后切换到「接受邀请」，粘贴 Token 并设置密码。",
+    ].join("\n"),
+  };
+}
+
+function buildPasswordResetNotification({ env, user, token, expiresAt }) {
+  return {
+    subject: "[DJCYTools] 密码重置 Token",
+    body: [
+      `账号：${user.email}`,
+      `重置 Token：${token}`,
+      `有效期至：${expiresAt}`,
+      `入口：${getAppEntryUrl(env)}`,
+      "打开登录页后切换到「重置密码」，粘贴 Token 并设置新密码。",
+    ].join("\n"),
+  };
+}
+
+export function createTeamInvite(rootDir, env, session, { email, name, role } = {}) {
+  const db = getDatabase(rootDir, env);
+  const invitedEmail = normalizeEmail(email);
+  assertValidEmail(invitedEmail);
+  const normalizedRole = normalizeRole(role || "viewer");
+  if (normalizedRole === "owner") {
+    throw createDatabaseError(400, "邀请不能直接授予所有者角色，请先邀请为编辑者或查看者。", "INVITE_OWNER_FORBIDDEN");
+  }
+  const timestamp = nowIso();
+  const token = crypto.randomBytes(32).toString("base64url");
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  let invite;
+  let notification;
+  execTransaction(db, () => {
+    db.prepare(
+      `UPDATE team_invites
+       SET status = 'expired', updated_at = ?
+       WHERE team_id = ? AND invited_email = ? AND status = 'pending'`,
+    ).run(timestamp, session.team.id, invitedEmail);
+    db.prepare(
+      `UPDATE notification_outbox
+       SET status = 'expired', updated_at = ?
+       WHERE team_id = ? AND recipient = ? AND target_type = 'team_invite' AND status = 'queued'`,
+    ).run(timestamp, session.team.id, invitedEmail);
+    const inviteId = randomId("invite");
+    db.prepare(
+      `INSERT INTO team_invites(id, team_id, invited_email, invited_name, role, token_hash, created_by_user_id, status, expires_at, created_at, updated_at)
+       VALUES(?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+    ).run(
+      inviteId,
+      session.team.id,
+      invitedEmail,
+      String(name || "").trim().slice(0, 40),
+      normalizedRole,
+      hashToken(token),
+      session.user.id,
+      expiresAt,
+      timestamp,
+      timestamp,
+    );
+    const row = db.prepare("SELECT * FROM team_invites WHERE token_hash = ?").get(hashToken(token));
+    invite = invitePayload(row, token);
+    const message = buildInviteNotification({ env, session, invite, token });
+    notification = insertNotificationOutboxEntry(db, {
+      teamId: session.team.id,
+      kind: "team_invite",
+      recipient: invitedEmail,
+      subject: message.subject,
+      body: message.body,
+      payload: { email: invitedEmail, role: invite.roleValue, expiresAt, deliveryMode: "local_outbox" },
+      targetType: "team_invite",
+      targetId: inviteId,
+      createdByUserId: session.user.id,
+      timestamp,
+    });
+  });
+  appendAuditLogToDatabase(rootDir, env, session, {
+    action: "team.invite.created",
+    targetType: "team_invite",
+    targetId: invite.id,
+    detail: { email: invitedEmail, role: invite.roleValue, notificationId: notification?.id || "" },
+  });
+  return { ...invite, notification };
+}
+
+export function listTeamInvites(rootDir, env, session) {
+  const db = getDatabase(rootDir, env);
+  const timestamp = nowIso();
+  db.prepare("UPDATE team_invites SET status = 'expired', updated_at = ? WHERE team_id = ? AND status = 'pending' AND expires_at <= ?").run(
+    timestamp,
+    session.team.id,
+    timestamp,
+  );
+  return db
+    .prepare("SELECT * FROM team_invites WHERE team_id = ? ORDER BY created_at DESC LIMIT 100")
+    .all(session.team.id)
+    .map((row) => invitePayload(row));
+}
+
+function createSessionForMembership(db, user, membership) {
+  const token = crypto.randomBytes(32).toString("base64url");
+  const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  db.prepare("INSERT INTO sessions(token_hash, user_id, expires_at, created_at) VALUES(?, ?, ?, ?)").run(hashToken(token), user.id, expiresAt, nowIso());
+  return { token, expiresAt, ...sessionPayload(user, membership) };
+}
+
+export function acceptTeamInvite(rootDir, env, { token, password, name } = {}) {
+  const db = getDatabase(rootDir, env);
+  assertValidPassword(password);
+  const timestamp = nowIso();
+  let accepted;
+  execTransaction(db, () => {
+    const invite = db
+      .prepare(
+        `SELECT team_invites.*, teams.name AS team_name
+         FROM team_invites
+         JOIN teams ON teams.id = team_invites.team_id
+         WHERE team_invites.token_hash = ?`,
+      )
+      .get(hashToken(token || ""));
+    if (!invite || invite.status !== "pending") {
+      throw createDatabaseError(404, "邀请不存在或已经失效。", "INVITE_NOT_FOUND");
+    }
+    if (new Date(invite.expires_at).getTime() <= Date.now()) {
+      db.prepare("UPDATE team_invites SET status = 'expired', updated_at = ? WHERE id = ?").run(timestamp, invite.id);
+      throw createDatabaseError(410, "邀请已经过期，请让团队所有者重新发送。", "INVITE_EXPIRED");
+    }
+
+    const email = normalizeEmail(invite.invited_email);
+    let user = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
+    if (user?.password_hash) {
+      if (!verifyPassword(password, user.password_hash)) {
+        throw createDatabaseError(401, "该邮箱已注册，请输入原账号密码接受邀请。", "INVALID_CREDENTIALS");
+      }
+    } else if (user?.id) {
+      db.prepare("UPDATE users SET name = ?, password_hash = ?, updated_at = ? WHERE id = ?").run(
+        String(name || invite.invited_name || email.split("@")[0]).trim().slice(0, 40),
+        hashPassword(password),
+        timestamp,
+        user.id,
+      );
+      user = db.prepare("SELECT * FROM users WHERE id = ?").get(user.id);
+    } else {
+      const userId = stableId("user", email);
+      db.prepare(
+        `INSERT INTO users(id, email, name, password_hash, created_at, updated_at)
+         VALUES(?, ?, ?, ?, ?, ?)`,
+      ).run(
+        userId,
+        email,
+        String(name || invite.invited_name || email.split("@")[0]).trim().slice(0, 40),
+        hashPassword(password),
+        timestamp,
+        timestamp,
+      );
+      user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
+    }
+
+    db.prepare("INSERT OR REPLACE INTO team_members(team_id, user_id, role, created_at, updated_at) VALUES(?, ?, ?, COALESCE((SELECT created_at FROM team_members WHERE team_id = ? AND user_id = ?), ?), ?)").run(
+      invite.team_id,
+      user.id,
+      normalizeRole(invite.role),
+      invite.team_id,
+      user.id,
+      timestamp,
+      timestamp,
+    );
+    db.prepare("UPDATE team_invites SET status = 'accepted', accepted_at = ?, updated_at = ? WHERE id = ?").run(timestamp, timestamp, invite.id);
+    accepted = createSessionForMembership(db, user, {
+      role: normalizeRole(invite.role),
+      team_id: invite.team_id,
+      team_name: invite.team_name,
+    });
+  });
+  appendAuditLogToDatabase(rootDir, env, accepted, {
+    action: "team.invite.accepted",
+    targetType: "team",
+    targetId: accepted.team.id,
+    detail: { email: accepted.user.email },
+  });
+  return accepted;
+}
+
+export function requestPasswordReset(rootDir, env, { email } = {}) {
+  const db = getDatabase(rootDir, env);
+  const normalizedEmail = normalizeEmail(email);
+  const user = normalizedEmail ? db.prepare("SELECT * FROM users WHERE email = ? AND password_hash <> ''").get(normalizedEmail) : null;
+  if (!user) return { ok: true, email: normalizedEmail, token: "", expiresAt: null };
+  const token = crypto.randomBytes(32).toString("base64url");
+  const timestamp = nowIso();
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  let notification;
+  execTransaction(db, () => {
+    db.prepare("UPDATE password_reset_tokens SET status = 'expired' WHERE user_id = ? AND status = 'pending'").run(user.id);
+    db.prepare(
+      `UPDATE notification_outbox
+       SET status = 'expired', updated_at = ?
+       WHERE user_id = ? AND target_type = 'password_reset' AND status = 'queued'`,
+    ).run(timestamp, user.id);
+    const resetId = randomId("reset");
+    db.prepare("INSERT INTO password_reset_tokens(id, user_id, token_hash, status, expires_at, created_at) VALUES(?, ?, ?, 'pending', ?, ?)").run(
+      resetId,
+      user.id,
+      hashToken(token),
+      expiresAt,
+      timestamp,
+    );
+    const membership = readPrimaryMembershipForUser(db, user.id);
+    const message = buildPasswordResetNotification({ env, user, token, expiresAt });
+    notification = insertNotificationOutboxEntry(db, {
+      teamId: membership?.team_id || null,
+      userId: user.id,
+      kind: "password_reset",
+      recipient: normalizedEmail,
+      subject: message.subject,
+      body: message.body,
+      payload: { email: normalizedEmail, expiresAt, deliveryMode: "local_outbox" },
+      targetType: "password_reset",
+      targetId: resetId,
+      createdByUserId: null,
+      timestamp,
+    });
+  });
+  appendAuditLogToDatabase(rootDir, env, { user, team: null }, {
+    action: "auth.password_reset.requested",
+    targetType: "user",
+    targetId: user.id,
+    detail: { email: normalizedEmail, notificationId: notification?.id || "" },
+  });
+  return { ok: true, email: normalizedEmail, token, expiresAt, notificationQueued: Boolean(notification) };
+}
+
+export function resetPassword(rootDir, env, { token, password } = {}) {
+  assertValidPassword(password);
+  const db = getDatabase(rootDir, env);
+  const timestamp = nowIso();
+  let user;
+  execTransaction(db, () => {
+    const row = db
+      .prepare(
+        `SELECT password_reset_tokens.*, users.email, users.name
+         FROM password_reset_tokens
+         JOIN users ON users.id = password_reset_tokens.user_id
+         WHERE password_reset_tokens.token_hash = ?`,
+      )
+      .get(hashToken(token || ""));
+    if (!row || row.status !== "pending") {
+      throw createDatabaseError(404, "重置链接不存在或已经使用。", "RESET_TOKEN_NOT_FOUND");
+    }
+    if (new Date(row.expires_at).getTime() <= Date.now()) {
+      db.prepare("UPDATE password_reset_tokens SET status = 'expired' WHERE id = ?").run(row.id);
+      throw createDatabaseError(410, "重置链接已经过期，请重新申请。", "RESET_TOKEN_EXPIRED");
+    }
+    db.prepare("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?").run(hashPassword(password), timestamp, row.user_id);
+    db.prepare("UPDATE password_reset_tokens SET status = 'used', used_at = ? WHERE id = ?").run(timestamp, row.id);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(row.user_id);
+    user = { id: row.user_id, email: row.email, name: row.name };
+  });
+  appendAuditLogToDatabase(rootDir, env, { user, team: null }, {
+    action: "auth.password_reset.completed",
+    targetType: "user",
+    targetId: user.id,
+    detail: { email: user.email },
+  });
+  return { ok: true, email: user.email };
+}
+
+export function changePassword(rootDir, env, session, { currentPassword, newPassword } = {}, sessionToken = "") {
+  assertValidPassword(newPassword);
+  const db = getDatabase(rootDir, env);
+  const user = db.prepare("SELECT * FROM users WHERE id = ? AND password_hash <> ''").get(session.user.id);
+  if (!user || !verifyPassword(currentPassword, user.password_hash)) {
+    throw createDatabaseError(401, "当前密码不正确", "INVALID_CURRENT_PASSWORD");
+  }
+  if (verifyPassword(newPassword, user.password_hash)) {
+    throw createDatabaseError(400, "新密码不能与当前密码相同", "PASSWORD_UNCHANGED");
+  }
+
+  execTransaction(db, () => {
+    db.prepare("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?").run(hashPassword(newPassword), nowIso(), user.id);
+    if (sessionToken) {
+      db.prepare("DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?").run(user.id, hashToken(sessionToken));
+    } else {
+      db.prepare("DELETE FROM sessions WHERE user_id = ?").run(user.id);
+    }
+  });
+  appendAuditLogToDatabase(rootDir, env, session, {
+    action: "auth.password_changed",
+    targetType: "user",
+    targetId: user.id,
+    detail: { email: user.email },
+  });
+  return { ok: true, email: user.email };
+}
+
+export function appendAuditLogToDatabase(rootDir, env, session, { action, targetType = "", targetId = "", detail = {} } = {}) {
+  if (!action) return null;
+  const db = getDatabase(rootDir, env);
+  const row = {
+    id: randomId("audit"),
+    teamId: session?.team?.id || null,
+    userId: session?.user?.id || null,
+    action,
+    targetType,
+    targetId,
+    detail,
+    createdAt: nowIso(),
+  };
+  db.prepare(
+    `INSERT INTO audit_logs(id, team_id, user_id, action, target_type, target_id, detail_json, created_at)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(row.id, row.teamId, row.userId, action, targetType, targetId, jsonStringify(detail, {}), row.createdAt);
+  return row;
+}
+
+export function readAuditLogsFromDatabase(rootDir, env, session) {
+  const db = getDatabase(rootDir, env);
+  return db
+    .prepare(
+      `SELECT audit_logs.*, users.name AS user_name, users.email AS user_email
+       FROM audit_logs
+       LEFT JOIN users ON users.id = audit_logs.user_id
+       WHERE audit_logs.team_id = ? OR audit_logs.user_id = ?
+       ORDER BY audit_logs.created_at DESC
+       LIMIT 300`,
+    )
+    .all(session.team.id, session.user.id)
+    .map((row) => ({
+      id: row.id,
+      action: row.action,
+      targetType: row.target_type || "",
+      targetId: row.target_id || "",
+      detail: parseJson(row.detail_json, {}),
+      actor: row.user_name || row.user_email || "系统",
+      createdAt: row.created_at,
+    }));
+}
+
+export function readNotificationOutboxFromDatabase(rootDir, env, session) {
+  const db = getDatabase(rootDir, env);
+  return db
+    .prepare(
+      `SELECT notification_outbox.*
+       FROM notification_outbox
+       WHERE notification_outbox.team_id = ?
+          OR notification_outbox.user_id IN (SELECT user_id FROM team_members WHERE team_id = ?)
+       ORDER BY notification_outbox.created_at DESC
+       LIMIT 200`,
+    )
+    .all(session.team.id, session.team.id)
+    .map(notificationPayload);
+}
+
+export function updateNotificationDeliveryStatus(rootDir, env, session, notificationId, { status } = {}) {
+  const db = getDatabase(rootDir, env);
+  const id = String(notificationId || "").trim();
+  const nextStatus = String(status || "").trim();
+  if (!id) throw createDatabaseError(400, "通知 ID 不能为空", "NOTIFICATION_ID_REQUIRED");
+  if (!["queued", "sent", "failed", "expired"].includes(nextStatus)) {
+    throw createDatabaseError(400, "通知状态只能是 queued、sent、failed 或 expired", "INVALID_NOTIFICATION_STATUS");
+  }
+
+  let notification;
+  execTransaction(db, () => {
+    const row = db
+      .prepare(
+        `SELECT *
+         FROM notification_outbox
+         WHERE id = ?
+           AND (
+             team_id = ?
+             OR user_id IN (SELECT user_id FROM team_members WHERE team_id = ?)
+           )`,
+      )
+      .get(id, session.team.id, session.team.id);
+    if (!row) throw createDatabaseError(404, "通知不存在或不属于当前团队", "NOTIFICATION_NOT_FOUND");
+    const timestamp = nowIso();
+    db.prepare("UPDATE notification_outbox SET status = ?, updated_at = ?, sent_at = ? WHERE id = ?").run(
+      nextStatus,
+      timestamp,
+      nextStatus === "sent" ? timestamp : null,
+      id,
+    );
+    notification = notificationPayload(db.prepare("SELECT * FROM notification_outbox WHERE id = ?").get(id));
+  });
+  appendAuditLogToDatabase(rootDir, env, session, {
+    action: "notification.delivery_status_updated",
+    targetType: "notification",
+    targetId: id,
+    detail: { status: nextStatus, kind: notification.kind, recipient: notification.recipient },
+  });
+  return notification;
+}
+
+export function readTemplateInsightsFromDatabase(rootDir, env, session) {
+  const db = getDatabase(rootDir, env);
+  const rows = db
+    .prepare(
+      `SELECT campaign_results.template_name,
+              COUNT(*) AS campaigns,
+              AVG(CAST(json_extract(campaign_results.payload_json, '$.metrics.roas') AS REAL)) AS avg_roas,
+              AVG(CAST(json_extract(campaign_results.payload_json, '$.metrics.ctr') AS REAL)) AS avg_ctr,
+              AVG(CAST(json_extract(campaign_results.payload_json, '$.metrics.completionRate') AS REAL)) AS avg_completion
+       FROM campaign_results
+       JOIN projects ON projects.id = campaign_results.project_id
+       WHERE projects.team_id = ?
+       GROUP BY campaign_results.template_name
+       ORDER BY avg_roas DESC, campaigns DESC`,
+    )
+    .all(session.team.id);
+  return rows.map((row) => ({
+    templateName: row.template_name || "未命名模板",
+    campaigns: Number(row.campaigns || 0),
+    avgRoas: Number(Number(row.avg_roas || 0).toFixed(2)),
+    avgCtr: Number(Number(row.avg_ctr || 0).toFixed(2)),
+    avgCompletionRate: Number(Number(row.avg_completion || 0).toFixed(2)),
+  }));
+}
+
+function countTeamOwners(db, teamId) {
+  return Number(
+    db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM team_members
+         JOIN users ON users.id = team_members.user_id
+         WHERE team_members.team_id = ? AND team_members.role = 'owner' AND users.password_hash <> ''`,
+      )
+      .get(teamId)?.count || 0,
+  );
+}
+
+export function updateTeamMemberInDatabase(rootDir, env, session, userId, patch = {}) {
+  const db = getDatabase(rootDir, env);
+  const targetUserId = String(userId || "").trim();
+  if (!targetUserId) throw createDatabaseError(400, "成员 ID 不能为空", "TEAM_MEMBER_ID_REQUIRED");
+  let workspace;
+  execTransaction(db, () => {
+    const member = db
+      .prepare(
+        `SELECT team_members.role, users.name, users.email
+         FROM team_members
+         JOIN users ON users.id = team_members.user_id
+         WHERE team_members.team_id = ? AND team_members.user_id = ?`,
+      )
+      .get(session.team.id, targetUserId);
+    if (!member) throw createDatabaseError(404, "成员不存在或不属于当前团队", "TEAM_MEMBER_NOT_FOUND");
+
+    const nextRole = patch.role ? normalizeRole(patch.role) : normalizeRole(member.role);
+    if (normalizeRole(member.role) === "owner" && nextRole !== "owner" && countTeamOwners(db, session.team.id) <= 1) {
+      throw createDatabaseError(409, "不能降级最后一个所有者", "LAST_OWNER_REQUIRED");
+    }
+
+    const nextName = String(patch.name || member.name || "").trim().slice(0, 40);
+    if (nextName) {
+      db.prepare("UPDATE users SET name = ?, updated_at = ? WHERE id = ?").run(nextName, nowIso(), targetUserId);
+    }
+    db.prepare("UPDATE team_members SET role = ?, updated_at = ? WHERE team_id = ? AND user_id = ?").run(
+      nextRole,
+      nowIso(),
+      session.team.id,
+      targetUserId,
+    );
+    workspace = readWorkspaceFromDatabase(rootDir, env, session);
+  });
+  appendAuditLogToDatabase(rootDir, env, session, {
+    action: "team.member.updated",
+    targetType: "user",
+    targetId: targetUserId,
+    detail: { role: patch.role || "", name: patch.name || "" },
+  });
+  return workspace;
+}
+
+export function removeTeamMemberFromDatabase(rootDir, env, session, userId) {
+  const db = getDatabase(rootDir, env);
+  const targetUserId = String(userId || "").trim();
+  if (!targetUserId) throw createDatabaseError(400, "成员 ID 不能为空", "TEAM_MEMBER_ID_REQUIRED");
+  if (targetUserId === session.user.id) throw createDatabaseError(409, "不能移除当前登录账号", "REMOVE_SELF_FORBIDDEN");
+  let workspace;
+  execTransaction(db, () => {
+    const member = db.prepare("SELECT role FROM team_members WHERE team_id = ? AND user_id = ?").get(session.team.id, targetUserId);
+    if (!member) throw createDatabaseError(404, "成员不存在或不属于当前团队", "TEAM_MEMBER_NOT_FOUND");
+    if (normalizeRole(member.role) === "owner" && countTeamOwners(db, session.team.id) <= 1) {
+      throw createDatabaseError(409, "不能移除最后一个所有者", "LAST_OWNER_REQUIRED");
+    }
+    db.prepare("DELETE FROM team_members WHERE team_id = ? AND user_id = ?").run(session.team.id, targetUserId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(targetUserId);
+    workspace = readWorkspaceFromDatabase(rootDir, env, session);
+  });
+  appendAuditLogToDatabase(rootDir, env, session, {
+    action: "team.member.removed",
+    targetType: "user",
+    targetId: targetUserId,
+  });
+  return workspace;
+}
+
+export function appendCampaignResultFromPublicApi(rootDir, env, projectId, resultValue = {}, teamId = null) {
+  const db = getDatabase(rootDir, env);
+  let saved;
+  execTransaction(db, () => {
+    const row = teamId
+      ? db.prepare("SELECT * FROM projects WHERE id = ? AND team_id = ?").get(projectId, teamId)
+      : db.prepare("SELECT * FROM projects WHERE id = ?").get(projectId);
+    if (!row) throw createDatabaseError(404, "项目不存在", "PROJECT_NOT_FOUND");
+    const project = readProject(db, row);
+    const activeVersion = project.versions.find((version) => version.id === project.activeVersionId) || project.versions[0] || {};
+    const result = normalizeCampaignResult(resultValue, {
+      versionId: activeVersion.id,
+      versionName: activeVersion.name,
+      templateName: activeVersion.templateName,
+      materialName: activeVersion.selectedTitle || project.name,
+    });
+    db.prepare(
+      "INSERT INTO campaign_results(id, project_id, version_id, version_name, template_name, payload_json, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      result.id,
+      project.id,
+      result.versionId,
+      result.versionName,
+      result.templateName,
+      jsonStringify(result, {}),
+      result.createdAt,
+    );
+    db.prepare("UPDATE projects SET updated_at = ? WHERE id = ?").run(nowIso(), project.id);
+    saved = result;
+  });
+  appendAuditLogToDatabase(rootDir, env, null, {
+    action: "public.campaign_result.received",
+    targetType: "project",
+    targetId: projectId,
+    detail: { channel: saved.channel, materialName: saved.materialName, roas: saved.metrics?.roas || 0 },
+  });
+  return saved;
+}
+
+function normalizeTrendSnapshotPayload(payload = {}) {
+  const source = payload && typeof payload === "object" ? payload : {};
+  const normalizeArray = (value) => (Array.isArray(value) ? value.filter((item) => item && typeof item === "object").slice(0, 100) : []);
+  return {
+    source: String(source.source || "manual").trim().slice(0, 80) || "manual",
+    tags: normalizeArray(source.tags),
+    templateSignals: normalizeArray(source.templateSignals),
+    marketNotes: normalizeArray(source.marketNotes),
+  };
+}
+
+function trendSnapshotPayload(row) {
+  return {
+    id: row.id,
+    source: row.source,
+    tags: parseJson(row.tags_json, []),
+    templateSignals: parseJson(row.template_signals_json, []),
+    marketNotes: parseJson(row.market_notes_json, []),
+    payload: parseJson(row.payload_json, {}),
+    createdAt: row.created_at,
+  };
+}
+
+export function createTrendSnapshotInDatabase(rootDir, env, session, payload) {
+  const db = getDatabase(rootDir, env);
+  const snapshot = normalizeTrendSnapshotPayload(payload);
+  const row = {
+    id: randomId("trend"),
+    teamId: session.team.id,
+    source: snapshot.source,
+    tags: snapshot.tags,
+    templateSignals: snapshot.templateSignals,
+    marketNotes: snapshot.marketNotes,
+    createdAt: nowIso(),
+  };
+  db.prepare(
+    `INSERT INTO trend_snapshots(id, team_id, source, tags_json, template_signals_json, market_notes_json, payload_json, created_at)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    row.id,
+    row.teamId,
+    row.source,
+    jsonStringify(row.tags, []),
+    jsonStringify(row.templateSignals, []),
+    jsonStringify(row.marketNotes, []),
+    jsonStringify(payload, {}),
+    row.createdAt,
+  );
+  appendAuditLogToDatabase(rootDir, env, session, {
+    action: "trend.snapshot.imported",
+    targetType: "trend_snapshot",
+    targetId: row.id,
+    detail: { source: row.source, tags: row.tags.length, templateSignals: row.templateSignals.length },
+  });
+  return {
+    id: row.id,
+    source: row.source,
+    tags: row.tags,
+    templateSignals: row.templateSignals,
+    marketNotes: row.marketNotes,
+    createdAt: row.createdAt,
+  };
+}
+
+export function readTrendSnapshotsFromDatabase(rootDir, env, session) {
+  const db = getDatabase(rootDir, env);
+  return db
+    .prepare("SELECT * FROM trend_snapshots WHERE team_id = ? OR team_id IS NULL ORDER BY created_at DESC LIMIT 20")
+    .all(session.team.id)
+    .map((row) => trendSnapshotPayload(row));
+}
+
+export function readLatestTrendSnapshotFromDatabase(rootDir, env, session) {
+  const db = getDatabase(rootDir, env);
+  const row = db
+    .prepare("SELECT * FROM trend_snapshots WHERE team_id = ? OR team_id IS NULL ORDER BY created_at DESC LIMIT 1")
+    .get(session.team.id);
+  return row ? trendSnapshotPayload(row) : null;
+}
+
+function publicApiTokenPayload(row, token = "") {
+  return {
+    id: row.id,
+    name: row.name,
+    prefix: row.token_prefix,
+    token,
+    lastUsedAt: row.last_used_at || null,
+    revokedAt: row.revoked_at || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function createPublicApiToken(rootDir, env, session, { name } = {}) {
+  const db = getDatabase(rootDir, env);
+  const token = `djcy_${crypto.randomBytes(30).toString("base64url")}`;
+  const timestamp = nowIso();
+  const row = {
+    id: randomId("api_token"),
+    name: String(name || "制作流程 Token").trim().slice(0, 80) || "制作流程 Token",
+    tokenPrefix: `${token.slice(0, 12)}...`,
+  };
+  db.prepare(
+    `INSERT INTO public_api_tokens(id, team_id, name, token_hash, token_prefix, created_by_user_id, created_at, updated_at)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(row.id, session.team.id, row.name, hashToken(token), row.tokenPrefix, session.user.id, timestamp, timestamp);
+  appendAuditLogToDatabase(rootDir, env, session, {
+    action: "public_api.token.created",
+    targetType: "public_api_token",
+    targetId: row.id,
+    detail: { name: row.name, prefix: row.tokenPrefix },
+  });
+  return { id: row.id, name: row.name, prefix: row.tokenPrefix, token, lastUsedAt: null, revokedAt: null, createdAt: timestamp, updatedAt: timestamp };
+}
+
+export function listPublicApiTokens(rootDir, env, session) {
+  const db = getDatabase(rootDir, env);
+  return db
+    .prepare("SELECT * FROM public_api_tokens WHERE team_id = ? ORDER BY revoked_at IS NOT NULL, created_at DESC LIMIT 100")
+    .all(session.team.id)
+    .map((row) => publicApiTokenPayload(row));
+}
+
+export function revokePublicApiToken(rootDir, env, session, tokenId) {
+  const db = getDatabase(rootDir, env);
+  const id = String(tokenId || "").trim();
+  const timestamp = nowIso();
+  const row = db.prepare("SELECT * FROM public_api_tokens WHERE id = ? AND team_id = ?").get(id, session.team.id);
+  if (!row) throw createDatabaseError(404, "API Token 不存在或不属于当前团队", "PUBLIC_API_TOKEN_NOT_FOUND");
+  db.prepare("UPDATE public_api_tokens SET revoked_at = COALESCE(revoked_at, ?), updated_at = ? WHERE id = ?").run(timestamp, timestamp, id);
+  appendAuditLogToDatabase(rootDir, env, session, {
+    action: "public_api.token.revoked",
+    targetType: "public_api_token",
+    targetId: id,
+    detail: { name: row.name, prefix: row.token_prefix },
+  });
+  return { ok: true };
+}
+
+export function resolvePublicApiToken(rootDir, env, token) {
+  const value = String(token || "").trim();
+  if (!value) return null;
+  const envToken = String(env.DJCYTOOLS_PUBLIC_API_TOKEN || "").trim();
+  if (envToken && value === envToken) return { source: "env", teamId: null, tokenId: "env" };
+  const db = getDatabase(rootDir, env);
+  const row = db.prepare("SELECT * FROM public_api_tokens WHERE token_hash = ? AND revoked_at IS NULL").get(hashToken(value));
+  if (!row) return null;
+  db.prepare("UPDATE public_api_tokens SET last_used_at = ?, updated_at = ? WHERE id = ?").run(nowIso(), nowIso(), row.id);
+  return { source: "database", teamId: row.team_id, tokenId: row.id };
+}
+
+export function readPublicProjectExport(rootDir, env, projectId, teamId = null) {
+  const db = getDatabase(rootDir, env);
+  const row = teamId
+    ? db.prepare("SELECT * FROM projects WHERE id = ? AND team_id = ?").get(projectId, teamId)
+    : db.prepare("SELECT * FROM projects WHERE id = ?").get(projectId);
+  if (!row) throw createDatabaseError(404, "项目不存在", "PROJECT_NOT_FOUND");
+  return readProject(db, row);
+}
+
+export function listPublicProjects(rootDir, env, teamId = null) {
+  const db = getDatabase(rootDir, env);
+  const sql = `SELECT projects.id, projects.name, projects.status, projects.updated_at, teams.name AS team_name,
+              COUNT(versions.id) AS version_count
+       FROM projects
+       JOIN teams ON teams.id = projects.team_id
+       LEFT JOIN versions ON versions.project_id = projects.id
+       ${teamId ? "WHERE projects.team_id = ?" : ""}
+       GROUP BY projects.id
+       ORDER BY projects.updated_at DESC, projects.created_at DESC
+       LIMIT 200`;
+  return db
+    .prepare(sql)
+    .all(...(teamId ? [teamId] : []))
+    .map((row) => ({
+      id: row.id,
+      name: row.name,
+      status: row.status,
+      teamName: row.team_name,
+      versionCount: Number(row.version_count || 0),
+      updatedAt: row.updated_at,
+    }));
+}
+
+const postgresSchemaSql = `
+CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS teams (id TEXT PRIMARY KEY, name TEXT NOT NULL, active_project_id TEXT, settings_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS team_members (team_id TEXT NOT NULL, user_id TEXT NOT NULL, role TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (team_id, user_id));
+CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS team_invites (id TEXT PRIMARY KEY, team_id TEXT NOT NULL, invited_email TEXT NOT NULL, invited_name TEXT, role TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL, created_by_user_id TEXT, status TEXT NOT NULL DEFAULT 'pending', expires_at TEXT NOT NULL, accepted_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS password_reset_tokens (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL, status TEXT NOT NULL DEFAULT 'pending', expires_at TEXT NOT NULL, used_at TEXT, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS notification_outbox (id TEXT PRIMARY KEY, team_id TEXT, user_id TEXT, kind TEXT NOT NULL, channel TEXT NOT NULL DEFAULT 'local_outbox', recipient TEXT NOT NULL, subject TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', target_type TEXT, target_id TEXT, payload_json TEXT NOT NULL DEFAULT '{}', created_by_user_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, sent_at TEXT);
+CREATE TABLE IF NOT EXISTS public_api_tokens (id TEXT PRIMARY KEY, team_id TEXT NOT NULL, name TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL, token_prefix TEXT NOT NULL, created_by_user_id TEXT, last_used_at TEXT, revoked_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, team_id TEXT NOT NULL, owner_user_id TEXT, name TEXT NOT NULL, status TEXT NOT NULL, active_version_id TEXT, brief_json TEXT NOT NULL DEFAULT '{}', params_json TEXT NOT NULL DEFAULT '{}', payload_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS versions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, position INTEGER NOT NULL, name TEXT NOT NULL, template_name TEXT, source TEXT, model TEXT, request_id TEXT, usage_json TEXT NOT NULL DEFAULT '{}', cost_usd DOUBLE PRECISION DEFAULT 0, score_json TEXT NOT NULL DEFAULT '{}', payload_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS comments (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, position INTEGER NOT NULL, author TEXT NOT NULL, text TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS exports (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, position INTEGER NOT NULL, type TEXT NOT NULL, version TEXT, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS campaign_results (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, version_id TEXT, version_name TEXT, template_name TEXT, payload_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS custom_templates (id TEXT PRIMARY KEY, team_id TEXT NOT NULL, name TEXT NOT NULL, type TEXT, category TEXT, heat_rank INTEGER, heat_score DOUBLE PRECISION, tags_json TEXT NOT NULL DEFAULT '[]', payload_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS ai_logs (id TEXT PRIMARY KEY, team_id TEXT NOT NULL, user_id TEXT, status TEXT NOT NULL, model TEXT, instruction TEXT, market TEXT, template TEXT, usage_json TEXT NOT NULL DEFAULT '{}', cost_usd DOUBLE PRECISION DEFAULT 0, duration_ms INTEGER DEFAULT 0, error TEXT, payload_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS analytics_events (id TEXT PRIMARY KEY, page TEXT NOT NULL, visitor_hash TEXT, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS trend_snapshots (id TEXT PRIMARY KEY, team_id TEXT, source TEXT NOT NULL, tags_json TEXT NOT NULL DEFAULT '[]', template_signals_json TEXT NOT NULL DEFAULT '[]', market_notes_json TEXT NOT NULL DEFAULT '[]', payload_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS audit_logs (id TEXT PRIMARY KEY, team_id TEXT, user_id TEXT, action TEXT NOT NULL, target_type TEXT, target_id TEXT, detail_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_projects_team ON projects(team_id);
+CREATE INDEX IF NOT EXISTS idx_versions_project ON versions(project_id, position);
+CREATE INDEX IF NOT EXISTS idx_ai_logs_team_created ON ai_logs(team_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_analytics_page_created ON analytics_events(page, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_invites_team_status ON team_invites(team_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_password_reset_user_status ON password_reset_tokens(user_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notification_outbox_team_status ON notification_outbox(team_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notification_outbox_user_created ON notification_outbox(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_public_api_tokens_team ON public_api_tokens(team_id, revoked_at, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_team_created ON audit_logs(team_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_trend_snapshots_team_created ON trend_snapshots(team_id, created_at DESC);
+`.trim();
+
+function sqlLiteral(value) {
+  if (value === null || value === undefined) return "NULL";
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function insertStatementsForRows(tableName, rows) {
+  if (!rows.length) return [`-- ${tableName}: no rows`];
+  const columns = Object.keys(rows[0]);
+  return rows.map((row) => {
+    const values = columns.map((column) => sqlLiteral(row[column])).join(", ");
+    return `INSERT INTO ${tableName} (${columns.join(", ")}) VALUES (${values}) ON CONFLICT DO NOTHING;`;
+  });
+}
+
+export function exportPostgresMigrationSql(rootDir, env, session) {
+  const db = getDatabase(rootDir, env);
+  const teamId = session.team.id;
+  const projectIds = db.prepare("SELECT id FROM projects WHERE team_id = ?").all(teamId).map((row) => row.id);
+  const memberUserIds = db.prepare("SELECT user_id FROM team_members WHERE team_id = ?").all(teamId).map((row) => row.user_id);
+  const placeholders = projectIds.map(() => "?").join(", ");
+  const userPlaceholders = memberUserIds.map(() => "?").join(", ");
+  const tableRows = [
+    ["app_meta", db.prepare("SELECT * FROM app_meta").all()],
+    ["users", memberUserIds.length ? db.prepare(`SELECT * FROM users WHERE id IN (${userPlaceholders})`).all(...memberUserIds) : []],
+    ["teams", db.prepare("SELECT * FROM teams WHERE id = ?").all(teamId)],
+    ["team_members", db.prepare("SELECT * FROM team_members WHERE team_id = ?").all(teamId)],
+    ["team_invites", db.prepare("SELECT * FROM team_invites WHERE team_id = ?").all(teamId)],
+    [
+      "notification_outbox",
+      db
+        .prepare(
+          `SELECT *
+           FROM notification_outbox
+           WHERE team_id = ?
+              OR user_id IN (SELECT user_id FROM team_members WHERE team_id = ?)`,
+        )
+        .all(teamId, teamId),
+    ],
+    ["public_api_tokens", db.prepare("SELECT * FROM public_api_tokens WHERE team_id = ?").all(teamId)],
+    ["projects", db.prepare("SELECT * FROM projects WHERE team_id = ?").all(teamId)],
+    ["versions", projectIds.length ? db.prepare(`SELECT * FROM versions WHERE project_id IN (${placeholders})`).all(...projectIds) : []],
+    ["comments", projectIds.length ? db.prepare(`SELECT * FROM comments WHERE project_id IN (${placeholders})`).all(...projectIds) : []],
+    ["exports", projectIds.length ? db.prepare(`SELECT * FROM exports WHERE project_id IN (${placeholders})`).all(...projectIds) : []],
+    ["campaign_results", projectIds.length ? db.prepare(`SELECT * FROM campaign_results WHERE project_id IN (${placeholders})`).all(...projectIds) : []],
+    ["custom_templates", db.prepare("SELECT * FROM custom_templates WHERE team_id = ?").all(teamId)],
+    ["ai_logs", db.prepare("SELECT * FROM ai_logs WHERE team_id = ?").all(teamId)],
+    ["audit_logs", db.prepare("SELECT * FROM audit_logs WHERE team_id = ?").all(teamId)],
+    ["trend_snapshots", db.prepare("SELECT * FROM trend_snapshots WHERE team_id = ? OR team_id IS NULL").all(teamId)],
+    ["analytics_events", db.prepare("SELECT * FROM analytics_events").all()],
+  ];
+  const sections = tableRows.flatMap(([tableName, rows]) => [`\n-- ${tableName}`, ...insertStatementsForRows(tableName, rows)]);
+  return [
+    "-- DJCYTools PostgreSQL migration pack",
+    `-- Team: ${session.team.name} (${teamId})`,
+    `-- Generated at: ${nowIso()}`,
+    "BEGIN;",
+    postgresSchemaSql,
+    ...sections,
+    "COMMIT;",
+    "",
+  ].join("\n");
+}
+
 export function createSession(rootDir, env, email, password) {
   const db = getDatabase(rootDir, env);
   const normalizedEmail = normalizeEmail(email);
@@ -961,10 +2038,7 @@ export function createSession(rootDir, env, email, password) {
     error.code = "TEAM_REQUIRED";
     throw error;
   }
-  const token = crypto.randomBytes(32).toString("base64url");
-  const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000).toISOString();
-  db.prepare("INSERT INTO sessions(token_hash, user_id, expires_at, created_at) VALUES(?, ?, ?, ?)").run(hashToken(token), user.id, expiresAt, nowIso());
-  return { token, expiresAt, ...sessionPayload(user, membership) };
+  return createSessionForMembership(db, user, membership);
 }
 
 export function registerUser(rootDir, env, { email, password, name, teamName } = {}) {

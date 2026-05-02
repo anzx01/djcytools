@@ -2,22 +2,47 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   appendAiLogToDatabase,
+  appendCampaignResultFromPublicApi,
+  acceptTeamInvite,
+  appendAuditLogToDatabase,
   canRole,
+  changePassword,
+  createPublicApiToken,
+  createTrendSnapshotInDatabase,
+  createTeamInvite,
   createProjectInDatabase,
   createSession,
   deleteProjectFromDatabase,
   destroySession,
+  exportPostgresMigrationSql,
   getProjectFromDatabase,
+  listPublicApiTokens,
+  listTeamInvites,
+  listPublicProjects,
   listProjectsFromDatabase,
+  readAuditLogsFromDatabase,
   readAiLogsFromDatabase,
   readAnalyticsSummaryFromDatabase,
+  readLatestTrendSnapshotFromDatabase,
+  readNotificationOutboxFromDatabase,
+  readPublicProjectExport,
   readSession,
+  readTemplateInsightsFromDatabase,
+  readTrendSnapshotsFromDatabase,
   readWorkspaceFromDatabase,
+  removeTeamMemberFromDatabase,
+  requestPasswordReset,
   registerUser,
   recordAnalyticsEventToDatabase,
+  resolvePublicApiToken,
+  revokePublicApiToken,
+  resetPassword,
+  updateNotificationDeliveryStatus,
+  updateTeamMemberInDatabase,
   writeWorkspaceToDatabase,
   updateProjectInDatabase,
 } from "./database.mjs";
+import { lastTrendUpdated, marketNotes, templateSignals, trendTags } from "../src/data/trends.js";
 
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -79,6 +104,16 @@ function sendJson(res, statusCode, data, headers = {}) {
   res.end(JSON.stringify(data));
 }
 
+function sendText(res, statusCode, text, headers = {}) {
+  res.statusCode = statusCode;
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store");
+  for (const [key, value] of Object.entries(headers)) {
+    res.setHeader(key, value);
+  }
+  res.end(text);
+}
+
 function parseCookies(cookieHeader = "") {
   return Object.fromEntries(
     cookieHeader
@@ -124,6 +159,179 @@ function ensureRole(res, session, requiredRole) {
   if (canRole(session.membership.role, requiredRole)) return true;
   sendJson(res, 403, { error: "当前角色没有执行该操作的权限。", code: "FORBIDDEN", requiredRole });
   return false;
+}
+
+function appendAudit(rootDir, env, session, action, detail = {}) {
+  appendAuditLogToDatabase(rootDir, env, session, {
+    action,
+    targetType: detail.targetType || "",
+    targetId: detail.targetId || "",
+    detail,
+  });
+}
+
+function getPublicApiToken(req) {
+  const auth = req.headers.authorization || "";
+  if (auth.toLowerCase().startsWith("bearer ")) return auth.slice(7).trim();
+  return req.headers["x-djcytools-api-key"] || "";
+}
+
+function resolvePublicApiAccess(req, env, rootDir) {
+  return resolvePublicApiToken(rootDir, env, getPublicApiToken(req));
+}
+
+function sendPublicApiRequired(res) {
+  sendJson(res, 401, { error: "第三方 API Token 未配置或不正确。", code: "PUBLIC_API_AUTH_REQUIRED" });
+}
+
+function buildTrendSummary(insights = [], snapshot = null) {
+  const insightByName = new Map(insights.map((item) => [item.templateName, item]));
+  const baseTags = snapshot?.tags?.length ? snapshot.tags : trendTags;
+  const baseSignals = snapshot?.templateSignals?.length ? snapshot.templateSignals : templateSignals;
+  const baseNotes = snapshot?.marketNotes?.length ? snapshot.marketNotes : marketNotes;
+  const enrichedSignals = baseSignals.map((signal) => {
+    const insight = insightByName.get(signal.name);
+    if (!insight) return signal;
+    return {
+      ...signal,
+      campaigns: insight.campaigns,
+      avgRoas: insight.avgRoas,
+      avgCtr: insight.avgCtr,
+      avgCompletionRate: insight.avgCompletionRate,
+      score: Math.min(100, Math.round(signal.score * 0.7 + Math.min(insight.avgRoas * 18, 30))),
+    };
+  });
+  return {
+    lastUpdated: new Date().toISOString(),
+    sourceUpdatedAt: snapshot?.createdAt || lastTrendUpdated,
+    source: snapshot?.source || "static-seed",
+    snapshotId: snapshot?.id || "",
+    tags: baseTags,
+    templateSignals: enrichedSignals,
+    marketNotes: baseNotes,
+    teamInsights: insights,
+  };
+}
+
+function buildStorageMigrationPlan(env = {}) {
+  const databaseUrl = String(env.DJCYTOOLS_DATABASE_URL || "");
+  const target = databaseUrl.startsWith("postgres://") || databaseUrl.startsWith("postgresql://") ? "postgresql" : "sqlite";
+  return {
+    current: "sqlite",
+    target,
+    readyForMultiInstance: target === "postgresql",
+    tables: [
+      "users",
+      "teams",
+      "team_members",
+      "sessions",
+      "projects",
+      "versions",
+      "comments",
+      "exports",
+      "campaign_results",
+      "custom_templates",
+      "ai_logs",
+      "analytics_events",
+      "team_invites",
+      "password_reset_tokens",
+      "notification_outbox",
+      "public_api_tokens",
+      "trend_snapshots",
+      "audit_logs",
+    ],
+    steps: [
+      "设置 DJCYTOOLS_DATABASE_URL 为 PostgreSQL 连接串。",
+      "将 SQLite 中的业务表按主键导出为 JSON/CSV。",
+      "在 PostgreSQL 中创建同名表和索引，保持 id 与 created_at 字段不变。",
+      "先导入 teams/users/team_members，再导入 projects/versions/comments/exports/campaign_results/custom_templates。",
+      "切流前冻结写入，完成增量校验后再开启多实例服务。",
+    ],
+  };
+}
+
+function buildPublicOpenApiSpec(env = {}) {
+  const serverUrl = env.DJCYTOOLS_PUBLIC_API_BASE_URL || "http://127.0.0.1:4173";
+  return {
+    openapi: "3.1.0",
+    info: {
+      title: "DJCYTools Public Delivery API",
+      version: "0.1.0",
+      description: "面向内部制作流程和第三方系统的只读交付接口。",
+    },
+    servers: [{ url: serverUrl }],
+    components: {
+      securitySchemes: {
+        bearerAuth: { type: "http", scheme: "bearer" },
+        apiKeyHeader: { type: "apiKey", in: "header", name: "X-DJCYTOOLS-API-KEY" },
+      },
+    },
+    security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+    paths: {
+      "/api/public/health": {
+        get: {
+          summary: "检查公开交付 API 状态",
+          responses: {
+            200: { description: "服务可用" },
+            401: { description: "Token 未配置或不正确" },
+          },
+        },
+      },
+      "/api/public/projects": {
+        get: {
+          summary: "列出可交付项目摘要",
+          responses: {
+            200: { description: "项目摘要列表" },
+            401: { description: "Token 未配置或不正确" },
+          },
+        },
+      },
+      "/api/public/projects/{id}/export": {
+        get: {
+          summary: "导出单个项目完整 JSON",
+          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          responses: {
+            200: { description: "项目、版本、评论、导出、投流和互动体验数据" },
+            401: { description: "Token 未配置或不正确" },
+            404: { description: "项目不存在" },
+          },
+        },
+      },
+      "/api/public/projects/{id}/campaign-results": {
+        post: {
+          summary: "回写单个项目的投流结果",
+          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    channel: { type: "string" },
+                    materialName: { type: "string" },
+                    spend: { type: "number" },
+                    impressions: { type: "number" },
+                    clicks: { type: "number" },
+                    completions: { type: "number" },
+                    conversions: { type: "number" },
+                    revenue: { type: "number" },
+                    materialUrl: { type: "string" },
+                    note: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            201: { description: "投流结果已写入项目" },
+            401: { description: "Token 未配置或不正确" },
+            404: { description: "项目不存在" },
+          },
+        },
+      },
+    },
+  };
 }
 
 function getClientKey(req) {
@@ -458,9 +666,72 @@ export async function handleApiRequest({ req, res, env, rootDir = process.cwd() 
       ok: true,
       time: new Date().toISOString(),
       aiConfigured: Boolean(env.DEEPSEEK_API_KEY),
+      publicApiConfigured: Boolean(env.DJCYTOOLS_PUBLIC_API_TOKEN),
       model: env.DEEPSEEK_MODEL || "deepseek-v4-flash",
       storage: "sqlite",
     });
+    return true;
+  }
+
+  if (pathname === "/api/public/openapi.json" && req.method === "GET") {
+    sendJson(res, 200, buildPublicOpenApiSpec(env));
+    return true;
+  }
+
+  if (pathname === "/api/public/health" && req.method === "GET") {
+    const publicAccess = resolvePublicApiAccess(req, env, rootDir);
+    if (!publicAccess) {
+      sendPublicApiRequired(res);
+      return true;
+    }
+    sendJson(res, 200, {
+      ok: true,
+      time: new Date().toISOString(),
+      service: "djcytools-public-api",
+      tokenSource: publicAccess.source,
+      formats: ["json"],
+    });
+    return true;
+  }
+
+  if (pathname === "/api/public/projects" && req.method === "GET") {
+    const publicAccess = resolvePublicApiAccess(req, env, rootDir);
+    if (!publicAccess) {
+      sendPublicApiRequired(res);
+      return true;
+    }
+    sendJson(res, 200, { projects: listPublicProjects(rootDir, env, publicAccess.teamId), exportedAt: new Date().toISOString() });
+    return true;
+  }
+
+  const publicExportMatch = pathname.match(/^\/api\/public\/projects\/([^/]+)\/export$/);
+  if (publicExportMatch && req.method === "GET") {
+    const publicAccess = resolvePublicApiAccess(req, env, rootDir);
+    if (!publicAccess) {
+      sendPublicApiRequired(res);
+      return true;
+    }
+    const project = readPublicProjectExport(rootDir, env, decodeURIComponent(publicExportMatch[1]), publicAccess.teamId);
+    appendAudit(rootDir, env, null, "public.project.exported", {
+      targetType: "project",
+      targetId: project.id,
+      projectName: project.name,
+      tokenSource: publicAccess.source,
+    });
+    sendJson(res, 200, { project, exportedAt: new Date().toISOString() });
+    return true;
+  }
+
+  const publicCampaignMatch = pathname.match(/^\/api\/public\/projects\/([^/]+)\/campaign-results$/);
+  if (publicCampaignMatch && req.method === "POST") {
+    const publicAccess = resolvePublicApiAccess(req, env, rootDir);
+    if (!publicAccess) {
+      sendPublicApiRequired(res);
+      return true;
+    }
+    const body = await readRequestBody(req, { maxBytes: Math.min(Number(env.DJCYTOOLS_MAX_BODY_BYTES || DEFAULT_MAX_BODY_BYTES), 64 * 1024), timeoutMs: Number(env.DJCYTOOLS_REQUEST_TIMEOUT_MS || DEFAULT_REQUEST_TIMEOUT_MS) });
+    const result = appendCampaignResultFromPublicApi(rootDir, env, decodeURIComponent(publicCampaignMatch[1]), body, publicAccess.teamId);
+    sendJson(res, 201, { result, savedAt: new Date().toISOString() });
     return true;
   }
 
@@ -474,6 +745,7 @@ export async function handleApiRequest({ req, res, env, rootDir = process.cwd() 
     const body = await readRequestBody(req, { maxBytes: Math.min(maxBytes, 16 * 1024), timeoutMs: requestTimeoutMs });
     const session = createSession(rootDir, env, body.email, body.password);
     setSessionCookie(res, session.token, session.expiresAt);
+    appendAudit(rootDir, env, session, "auth.login", { targetType: "user", targetId: session.user.id });
     sendJson(res, 200, authPayload(session));
     return true;
   }
@@ -487,13 +759,37 @@ export async function handleApiRequest({ req, res, env, rootDir = process.cwd() 
       teamName: body.teamName,
     });
     setSessionCookie(res, session.token, session.expiresAt);
+    appendAudit(rootDir, env, session, "auth.register", { targetType: "team", targetId: session.team.id });
     sendJson(res, 201, authPayload(session));
     return true;
   }
 
+  if (pathname === "/api/auth/invite/accept" && req.method === "POST") {
+    const body = await readRequestBody(req, { maxBytes: Math.min(maxBytes, 16 * 1024), timeoutMs: requestTimeoutMs });
+    const session = acceptTeamInvite(rootDir, env, body);
+    setSessionCookie(res, session.token, session.expiresAt);
+    sendJson(res, 200, authPayload(session));
+    return true;
+  }
+
+  if (pathname === "/api/auth/password-reset/request" && req.method === "POST") {
+    const body = await readRequestBody(req, { maxBytes: Math.min(maxBytes, 16 * 1024), timeoutMs: requestTimeoutMs });
+    const result = requestPasswordReset(rootDir, env, body);
+    sendJson(res, 200, result);
+    return true;
+  }
+
+  if (pathname === "/api/auth/password-reset/confirm" && req.method === "POST") {
+    const body = await readRequestBody(req, { maxBytes: Math.min(maxBytes, 16 * 1024), timeoutMs: requestTimeoutMs });
+    sendJson(res, 200, resetPassword(rootDir, env, body));
+    return true;
+  }
+
   if (pathname === "/api/auth/logout" && req.method === "POST") {
+    const session = readSession(rootDir, env, getSessionToken(req));
     destroySession(rootDir, env, getSessionToken(req));
     clearSessionCookie(res);
+    if (session) appendAudit(rootDir, env, session, "auth.logout", { targetType: "user", targetId: session.user.id });
     sendJson(res, 200, { ok: true });
     return true;
   }
@@ -514,6 +810,12 @@ export async function handleApiRequest({ req, res, env, rootDir = process.cwd() 
     return true;
   }
 
+  if (pathname === "/api/account/password" && req.method === "PATCH") {
+    const body = await readRequestBody(req, { maxBytes: Math.min(maxBytes, 16 * 1024), timeoutMs: requestTimeoutMs });
+    sendJson(res, 200, changePassword(rootDir, env, session, body, getSessionToken(req)));
+    return true;
+  }
+
   if (pathname === "/api/workspace" && req.method === "GET") {
     if (!ensureRole(res, session, "viewer")) return true;
     sendJson(res, 200, { workspace: await readWorkspace(rootDir, env, session) });
@@ -525,6 +827,7 @@ export async function handleApiRequest({ req, res, env, rootDir = process.cwd() 
     const body = await readRequestBody(req, { maxBytes, timeoutMs: requestTimeoutMs });
     const workspace = body.workspace || body;
     await writeWorkspace(rootDir, env, session, workspace);
+    appendAudit(rootDir, env, session, "workspace.saved", { targetType: "workspace", targetId: session.team.id });
     sendJson(res, 200, { ok: true, savedAt: new Date().toISOString() });
     return true;
   }
@@ -539,6 +842,7 @@ export async function handleApiRequest({ req, res, env, rootDir = process.cwd() 
     if (!ensureRole(res, session, "editor")) return true;
     const body = await readRequestBody(req, { maxBytes, timeoutMs: requestTimeoutMs });
     const project = createProjectInDatabase(rootDir, env, session, body.project || body);
+    appendAudit(rootDir, env, session, "project.created", { targetType: "project", targetId: project.id, name: project.name });
     sendJson(res, 201, { project, savedAt: new Date().toISOString() });
     return true;
   }
@@ -554,13 +858,16 @@ export async function handleApiRequest({ req, res, env, rootDir = process.cwd() 
     if (!ensureRole(res, session, "editor")) return true;
     const body = await readRequestBody(req, { maxBytes, timeoutMs: requestTimeoutMs });
     const project = updateProjectInDatabase(rootDir, env, session, decodeURIComponent(projectMatch[1]), body);
+    appendAudit(rootDir, env, session, "project.updated", { targetType: "project", targetId: project.id, name: project.name });
     sendJson(res, 200, { project, savedAt: new Date().toISOString() });
     return true;
   }
 
   if (projectMatch && req.method === "DELETE") {
     if (!ensureRole(res, session, "editor")) return true;
-    const workspace = deleteProjectFromDatabase(rootDir, env, session, decodeURIComponent(projectMatch[1]));
+    const projectId = decodeURIComponent(projectMatch[1]);
+    const workspace = deleteProjectFromDatabase(rootDir, env, session, projectId);
+    appendAudit(rootDir, env, session, "project.deleted", { targetType: "project", targetId: projectId });
     sendJson(res, 200, { ok: true, workspace, savedAt: new Date().toISOString() });
     return true;
   }
@@ -577,9 +884,125 @@ export async function handleApiRequest({ req, res, env, rootDir = process.cwd() 
     return true;
   }
 
+  if (pathname === "/api/audit-logs" && req.method === "GET") {
+    if (!ensureRole(res, session, "owner")) return true;
+    sendJson(res, 200, { logs: readAuditLogsFromDatabase(rootDir, env, session) });
+    return true;
+  }
+
+  if (pathname === "/api/notifications/outbox" && req.method === "GET") {
+    if (!ensureRole(res, session, "owner")) return true;
+    sendJson(res, 200, { notifications: readNotificationOutboxFromDatabase(rootDir, env, session) });
+    return true;
+  }
+
+  const notificationMatch = pathname.match(/^\/api\/notifications\/outbox\/([^/]+)$/);
+  if (notificationMatch && req.method === "PATCH") {
+    if (!ensureRole(res, session, "owner")) return true;
+    const body = await readRequestBody(req, { maxBytes: Math.min(maxBytes, 16 * 1024), timeoutMs: requestTimeoutMs });
+    const notification = updateNotificationDeliveryStatus(rootDir, env, session, decodeURIComponent(notificationMatch[1]), body);
+    sendJson(res, 200, { notification });
+    return true;
+  }
+
+  if (pathname === "/api/team/invites" && req.method === "GET") {
+    if (!ensureRole(res, session, "owner")) return true;
+    sendJson(res, 200, { invites: listTeamInvites(rootDir, env, session) });
+    return true;
+  }
+
+  if (pathname === "/api/team/invites" && req.method === "POST") {
+    if (!ensureRole(res, session, "owner")) return true;
+    const body = await readRequestBody(req, { maxBytes: Math.min(maxBytes, 16 * 1024), timeoutMs: requestTimeoutMs });
+    const invite = createTeamInvite(rootDir, env, session, body);
+    sendJson(res, 201, { invite });
+    return true;
+  }
+
+  if (pathname === "/api/api-tokens" && req.method === "GET") {
+    if (!ensureRole(res, session, "owner")) return true;
+    sendJson(res, 200, { tokens: listPublicApiTokens(rootDir, env, session), envTokenConfigured: Boolean(env.DJCYTOOLS_PUBLIC_API_TOKEN) });
+    return true;
+  }
+
+  if (pathname === "/api/api-tokens" && req.method === "POST") {
+    if (!ensureRole(res, session, "owner")) return true;
+    const body = await readRequestBody(req, { maxBytes: Math.min(maxBytes, 16 * 1024), timeoutMs: requestTimeoutMs });
+    const token = createPublicApiToken(rootDir, env, session, body);
+    sendJson(res, 201, { token });
+    return true;
+  }
+
+  const apiTokenMatch = pathname.match(/^\/api\/api-tokens\/([^/]+)$/);
+  if (apiTokenMatch && req.method === "DELETE") {
+    if (!ensureRole(res, session, "owner")) return true;
+    sendJson(res, 200, revokePublicApiToken(rootDir, env, session, decodeURIComponent(apiTokenMatch[1])));
+    return true;
+  }
+
+  const teamMemberMatch = pathname.match(/^\/api\/team\/members\/([^/]+)$/);
+  if (teamMemberMatch && req.method === "PATCH") {
+    if (!ensureRole(res, session, "owner")) return true;
+    const body = await readRequestBody(req, { maxBytes: Math.min(maxBytes, 16 * 1024), timeoutMs: requestTimeoutMs });
+    const workspace = updateTeamMemberInDatabase(rootDir, env, session, decodeURIComponent(teamMemberMatch[1]), body);
+    sendJson(res, 200, { workspace, savedAt: new Date().toISOString() });
+    return true;
+  }
+
+  if (teamMemberMatch && req.method === "DELETE") {
+    if (!ensureRole(res, session, "owner")) return true;
+    const workspace = removeTeamMemberFromDatabase(rootDir, env, session, decodeURIComponent(teamMemberMatch[1]));
+    sendJson(res, 200, { workspace, savedAt: new Date().toISOString() });
+    return true;
+  }
+
+  if (pathname === "/api/templates/insights" && req.method === "GET") {
+    if (!ensureRole(res, session, "viewer")) return true;
+    sendJson(res, 200, { insights: readTemplateInsightsFromDatabase(rootDir, env, session) });
+    return true;
+  }
+
+  if (pathname === "/api/trends/summary" && req.method === "GET") {
+    if (!ensureRole(res, session, "viewer")) return true;
+    sendJson(res, 200, buildTrendSummary(readTemplateInsightsFromDatabase(rootDir, env, session), readLatestTrendSnapshotFromDatabase(rootDir, env, session)));
+    return true;
+  }
+
+  if (pathname === "/api/trends/snapshots" && req.method === "GET") {
+    if (!ensureRole(res, session, "viewer")) return true;
+    sendJson(res, 200, { snapshots: readTrendSnapshotsFromDatabase(rootDir, env, session) });
+    return true;
+  }
+
+  if (pathname === "/api/trends/snapshots" && req.method === "POST") {
+    if (!ensureRole(res, session, "editor")) return true;
+    const body = await readRequestBody(req, { maxBytes: Math.min(maxBytes, 256 * 1024), timeoutMs: requestTimeoutMs });
+    const snapshot = createTrendSnapshotInDatabase(rootDir, env, session, body);
+    sendJson(res, 201, { snapshot });
+    return true;
+  }
+
+  if (pathname === "/api/storage/migration-plan" && req.method === "GET") {
+    if (!ensureRole(res, session, "owner")) return true;
+    sendJson(res, 200, buildStorageMigrationPlan(env));
+    return true;
+  }
+
+  if (pathname === "/api/storage/postgres-export" && req.method === "GET") {
+    if (!ensureRole(res, session, "owner")) return true;
+    const sql = exportPostgresMigrationSql(rootDir, env, session);
+    appendAudit(rootDir, env, session, "storage.postgres_exported", { targetType: "team", targetId: session.team.id });
+    sendText(res, 200, sql, {
+      "Content-Disposition": `attachment; filename="djcytools-postgres-${new Date().toISOString().slice(0, 10)}.sql"`,
+    });
+    return true;
+  }
+
   if (pathname === "/api/generate-script" && req.method === "POST") {
     if (!ensureRole(res, session, "editor")) return true;
-    return handleGenerateScript({ req, res, env, rootDir, session });
+    const handled = await handleGenerateScript({ req, res, env, rootDir, session });
+    appendAudit(rootDir, env, session, "ai.generate_script", { targetType: "ai_request" });
+    return handled;
   }
 
   return false;

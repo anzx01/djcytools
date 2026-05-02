@@ -9,13 +9,17 @@ import {
   Gauge,
   GitCompare,
   Home,
+  KeyRound,
   LogIn,
   LogOut,
+  MonitorPlay,
   PenLine,
   Plus,
   ScrollText,
+  ShieldAlert,
   ShieldCheck,
   Sparkles,
+  Store,
   Target,
   Trash2,
   TrendingUp,
@@ -23,37 +27,77 @@ import {
   Wand2,
 } from "lucide-react";
 import { defaultBrief, markets, templates, templateTypes } from "./data/templates";
-import { createProject, createProjectFromVersion, getTemplate, mergeParams, rewriteVersion, scoreScript, uid } from "./lib/generator";
+import {
+  analyzeCompliance,
+  analyzeSimilarity,
+  buildStoryboards,
+  createInteractiveExperience,
+  createProject,
+  createProjectFromVersion,
+  getTemplate,
+  mergeParams,
+  rewriteVersion,
+  scoreScript,
+  uid,
+} from "./lib/generator";
 import { loadWorkspace, normalizeWorkspace, saveWorkspace } from "./lib/storage";
 import { calculateCampaignMetrics } from "./lib/exporters";
 import { generateVersionWithDeepSeek, rewriteVersionWithDeepSeek } from "./lib/deepseekClient";
 import {
   fetchAiLogs,
   fetchAnalyticsSummary,
+  fetchAuditLogs,
   fetchAuthSession,
+  fetchHealth,
+  fetchNotificationOutbox,
+  fetchPublicApiTokens,
+  fetchStorageMigrationPlan,
+  fetchTeamInvites,
+  fetchTemplateInsights,
+  fetchTrendSnapshots,
+  fetchTrendSummary,
+  acceptInvite,
+  changePassword,
+  confirmPasswordReset,
+  createPublicApiToken,
+  createTeamInvite,
   createProjectOnServer,
   deleteProjectOnServer,
+  downloadPostgresMigrationSql,
+  importTrendSnapshot,
   loadWorkspaceFromServer,
   login,
   logout,
+  requestPasswordReset,
   register,
+  removeTeamMember,
+  revokePublicApiToken,
   saveWorkspaceToServer,
   trackPageView,
+  updateNotificationDelivery,
+  updateTeamMember,
   updateProjectOnServer,
 } from "./lib/workspaceApi";
 import {
   CampaignPanel,
+  AccountSecurityPanel,
+  ApiHandoffPanel,
+  CompliancePanel,
   DeliveryPanel,
   DraftReadinessPanel,
   ErrorNotice,
+  InteractivePanel,
   Metric,
   OpsPanel,
   PanelHeader,
   ProjectManagementPanel,
   ScoreCard,
+  SecurityPanel,
   ScriptEditor,
+  StoryboardPanel,
   TeamPanel,
   TemplateBriefPreview,
+  TemplateMarketplacePanel,
   TemplateManager,
   TrendPanel,
   VersionPanel,
@@ -94,8 +138,19 @@ function formatDate(value) {
   });
 }
 
-function updateVersionScore(version) {
-  return { ...version, score: scoreScript(version) };
+function updateVersionScore(version, candidates = []) {
+  const withStoryboards = {
+    ...version,
+    storyboards: buildStoryboards(version),
+  };
+  const complianceReport = analyzeCompliance(withStoryboards);
+  const similarityReport = analyzeSimilarity(withStoryboards, candidates);
+  return {
+    ...withStoryboards,
+    complianceReport,
+    similarityReport,
+    score: scoreScript({ ...withStoryboards, complianceReport, similarityReport }),
+  };
 }
 
 export default function App() {
@@ -112,6 +167,15 @@ export default function App() {
   const [storageStatus, setStorageStatus] = useState("正在连接服务端工作区...");
   const [aiLogState, setAiLogState] = useState({ logs: [], totals: { count: 0, success: 0, tokens: 0, costUsd: 0 } });
   const [analyticsState, setAnalyticsState] = useState(emptyAnalyticsState);
+  const [auditState, setAuditState] = useState({ logs: [] });
+  const [inviteState, setInviteState] = useState({ invites: [], lastInvite: null });
+  const [notificationState, setNotificationState] = useState({ notifications: [] });
+  const [templateInsights, setTemplateInsights] = useState([]);
+  const [trendSummary, setTrendSummary] = useState(null);
+  const [trendSnapshots, setTrendSnapshots] = useState([]);
+  const [migrationPlan, setMigrationPlan] = useState(null);
+  const [healthState, setHealthState] = useState(null);
+  const [apiTokenState, setApiTokenState] = useState({ tokens: [], lastToken: null, envTokenConfigured: false });
   const [authState, setAuthState] = useState({ ...unauthenticatedState, status: "checking" });
   const [loginError, setLoginError] = useState("");
   const serverReadyRef = useRef(false);
@@ -190,10 +254,15 @@ export default function App() {
           detail: "可以继续生成和编辑；服务端恢复后再刷新或导入备份同步。",
           tone: "warning",
         });
-      });
+    });
     refreshAiLogs();
     refreshAnalytics();
-  }, [isAuthenticated]);
+    refreshTemplateInsights();
+    refreshTrendSummary();
+    refreshSecurityData();
+    refreshHealth();
+    refreshApiTokens();
+  }, [isAuthenticated, canManageTeam]);
 
   useEffect(() => {
     const page = showLanding ? "landing" : "workbench";
@@ -220,6 +289,65 @@ export default function App() {
       .catch(() => setAnalyticsState(emptyAnalyticsState));
   }
 
+  function refreshTemplateInsights() {
+    fetchTemplateInsights()
+      .then((data) => setTemplateInsights(data.insights || []))
+      .catch(() => setTemplateInsights([]));
+  }
+
+  function refreshTrendSummary() {
+    fetchTrendSummary()
+      .then(setTrendSummary)
+      .catch(() => setTrendSummary(null));
+    fetchTrendSnapshots()
+      .then((data) => setTrendSnapshots(data.snapshots || []))
+      .catch(() => setTrendSnapshots([]));
+  }
+
+  function refreshSecurityData() {
+    if (!canManageTeam) {
+      setAuditState({ logs: [] });
+      setInviteState((current) => ({ ...current, invites: [] }));
+      setNotificationState({ notifications: [] });
+      setMigrationPlan(null);
+      return;
+    }
+    fetchAuditLogs()
+      .then(setAuditState)
+      .catch(() => setAuditState({ logs: [] }));
+    fetchNotificationOutbox()
+      .then((data) => setNotificationState({ notifications: data.notifications || [] }))
+      .catch(() => setNotificationState({ notifications: [] }));
+    fetchTeamInvites()
+      .then((data) => setInviteState((current) => ({ ...current, invites: data.invites || [] })))
+      .catch(() => setInviteState((current) => ({ ...current, invites: [] })));
+    fetchStorageMigrationPlan()
+      .then(setMigrationPlan)
+      .catch(() => setMigrationPlan(null));
+  }
+
+  function refreshHealth() {
+    fetchHealth()
+      .then(setHealthState)
+      .catch(() => setHealthState(null));
+  }
+
+  function refreshApiTokens() {
+    if (!canManageTeam) {
+      setApiTokenState({ tokens: [], lastToken: null, envTokenConfigured: false });
+      return;
+    }
+    fetchPublicApiTokens()
+      .then((data) =>
+        setApiTokenState((current) => ({
+          tokens: data.tokens || [],
+          lastToken: current.lastToken,
+          envTokenConfigured: Boolean(data.envTokenConfigured),
+        })),
+      )
+      .catch(() => setApiTokenState({ tokens: [], lastToken: null, envTokenConfigured: false }));
+  }
+
   async function handleLogin({ email, password }) {
     setLoginError("");
     try {
@@ -244,6 +372,55 @@ export default function App() {
     }
   }
 
+  async function handleAcceptInvite({ token, password, name }) {
+    setLoginError("");
+    try {
+      const session = await acceptInvite({ token, password, name });
+      setAuthState({ status: "ready", ...session });
+      setActionError(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "接受邀请失败";
+      setLoginError(message);
+    }
+  }
+
+  async function handleRequestPasswordReset(email) {
+    setLoginError("");
+    try {
+      const result = await requestPasswordReset(email);
+      setLoginError(result.token ? `重置 Token：${result.token}` : "如果邮箱存在，系统已生成重置 Token。");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "申请重置失败";
+      setLoginError(message);
+    }
+  }
+
+  async function handleConfirmPasswordReset({ token, password }) {
+    setLoginError("");
+    try {
+      await confirmPasswordReset({ token, password });
+      setLoginError("密码已重置，请使用新密码登录。");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "重置密码失败";
+      setLoginError(message);
+    }
+  }
+
+  async function handleChangePassword({ currentPassword, newPassword }) {
+    try {
+      await changePassword({ currentPassword, newPassword });
+      setActionError({
+        title: "密码已更新",
+        message: "当前会话已保留，其他设备上的会话已失效。",
+        tone: "warning",
+      });
+      refreshSecurityData();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "密码更新失败";
+      setActionError({ title: "密码更新失败", message, tone: "error" });
+    }
+  }
+
   async function handleLogout() {
     try {
       await logout();
@@ -252,6 +429,14 @@ export default function App() {
       setAuthState(unauthenticatedState);
       setStorageStatus("已退出登录");
       setAiLogState({ logs: [], totals: { count: 0, success: 0, tokens: 0, costUsd: 0 } });
+      setAuditState({ logs: [] });
+      setInviteState({ invites: [], lastInvite: null });
+      setTemplateInsights([]);
+      setTrendSummary(null);
+      setTrendSnapshots([]);
+      setMigrationPlan(null);
+      setHealthState(null);
+      setApiTokenState({ tokens: [], lastToken: null, envTokenConfigured: false });
     }
   }
 
@@ -316,7 +501,7 @@ export default function App() {
       ...project,
       updatedAt: new Date().toISOString(),
       versions: project.versions.map((version) =>
-        version.id === activeVersion.id ? updateVersionScore(patcher(version)) : version,
+        version.id === activeVersion.id ? updateVersionScore(patcher(version), project.versions) : version,
       ),
     }));
   }
@@ -556,6 +741,169 @@ export default function App() {
         ...(project.campaignResults || []),
       ],
     }));
+    refreshTemplateInsights();
+    refreshTrendSummary();
+  }
+
+  async function handleCreateInvite(invite) {
+    if (!canManageTeam) return;
+    try {
+      const data = await createTeamInvite(invite);
+      setInviteState((current) => ({
+        invites: [data.invite, ...(current.invites || [])],
+        lastInvite: data.invite,
+      }));
+      setActionError({
+        title: "邀请已生成",
+        message: `已为 ${data.invite.email} 生成邀请 Token。`,
+        detail: "通知正文已进入本地发件箱，可复制给成员后标记投递状态。",
+        tone: "warning",
+      });
+      refreshSecurityData();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "创建邀请失败";
+      setActionError({ title: "创建邀请失败", message, tone: "error" });
+    }
+  }
+
+  async function handleUpdateNotificationDelivery(notificationId, status) {
+    if (!canManageTeam) return;
+    try {
+      const data = await updateNotificationDelivery(notificationId, status);
+      setNotificationState((current) => ({
+        notifications: (current.notifications || []).map((item) => (item.id === notificationId ? data.notification : item)),
+      }));
+      refreshSecurityData();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "通知状态更新失败";
+      setActionError({ title: "通知状态更新失败", message, tone: "error" });
+    }
+  }
+
+  async function handleUpdateTeamMember(memberId, patch) {
+    if (!canManageTeam) return;
+    try {
+      const nextWorkspace = await updateTeamMember(memberId, patch);
+      serverReadyRef.current = true;
+      setWorkspace(normalizeWorkspace(nextWorkspace));
+      setStorageStatus("团队成员权限已同步");
+      refreshSecurityData();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "成员更新失败";
+      setActionError({ title: "成员权限同步失败", message, tone: "error" });
+      loadWorkspaceFromServer().then((serverWorkspace) => setWorkspace(normalizeWorkspace(serverWorkspace))).catch(() => {});
+    }
+  }
+
+  async function handleRemoveTeamMember(memberId, member) {
+    if (!canManageTeam) return;
+    if (!window.confirm(`确认移除成员「${member?.name || "该成员"}」？`)) return;
+    try {
+      const nextWorkspace = await removeTeamMember(memberId);
+      serverReadyRef.current = true;
+      setWorkspace(normalizeWorkspace(nextWorkspace));
+      setStorageStatus("团队成员已移除");
+      refreshSecurityData();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "成员移除失败";
+      setActionError({ title: "成员移除失败", message, tone: "error" });
+    }
+  }
+
+  function handleCreateInteractiveExperience({ mood, persona }) {
+    if (!activeProject || !activeVersion || !canEdit) return;
+    const experience = createInteractiveExperience({ project: activeProject, version: activeVersion, mood, persona });
+    patchWorkspaceProject(activeProject.id, (project) => ({
+      ...project,
+      updatedAt: new Date().toISOString(),
+      interactiveExperiences: [experience, ...(project.interactiveExperiences || [])],
+      comments: [
+        {
+          id: uid("comment"),
+          author: "系统",
+          text: `已生成 C 端互动体验「${experience.name}」。`,
+          createdAt: new Date().toISOString(),
+        },
+        ...project.comments,
+      ],
+    }));
+  }
+
+  async function handleDownloadPostgresExport() {
+    if (!canManageTeam) return;
+    try {
+      await downloadPostgresMigrationSql();
+      setActionError({
+        title: "PostgreSQL 迁移包已导出",
+        message: "SQL 文件包含当前团队的项目、版本、模板、投流、AI 日志和审计记录。",
+        tone: "warning",
+      });
+      refreshSecurityData();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "导出失败";
+      setActionError({ title: "PostgreSQL 迁移包导出失败", message, tone: "error" });
+    }
+  }
+
+  async function handleCreateApiToken(name) {
+    if (!canManageTeam) return;
+    try {
+      const data = await createPublicApiToken(name);
+      setApiTokenState((current) => ({
+        envTokenConfigured: current.envTokenConfigured,
+        tokens: [data.token, ...(current.tokens || [])],
+        lastToken: data.token,
+      }));
+      setActionError({
+        title: "团队 API Token 已生成",
+        message: "Token 只显示一次，请立即保存到第三方制作流程。",
+        detail: "公开接口会按该 Token 所属团队限制项目范围。",
+        tone: "warning",
+      });
+      refreshSecurityData();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Token 生成失败";
+      setActionError({ title: "Token 生成失败", message, tone: "error" });
+    }
+  }
+
+  async function handleRevokeApiToken(tokenId) {
+    if (!canManageTeam) return;
+    if (!window.confirm("确认撤销这个 API Token？外部系统将无法继续使用它。")) return;
+    try {
+      await revokePublicApiToken(tokenId);
+      setApiTokenState((current) => ({
+        ...current,
+        tokens: (current.tokens || []).map((token) =>
+          token.id === tokenId ? { ...token, revokedAt: new Date().toISOString() } : token,
+        ),
+        lastToken: current.lastToken?.id === tokenId ? null : current.lastToken,
+      }));
+      refreshApiTokens();
+      refreshSecurityData();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Token 撤销失败";
+      setActionError({ title: "Token 撤销失败", message, tone: "error" });
+    }
+  }
+
+  async function handleImportTrendSnapshot(rawValue) {
+    if (!canEdit) return;
+    try {
+      const parsed = JSON.parse(rawValue);
+      const data = await importTrendSnapshot(parsed);
+      setActionError({
+        title: "趋势快照已导入",
+        message: `${data.snapshot.source} 已成为团队趋势参考。`,
+        detail: "数据洞察会优先使用最新导入快照，并叠加团队投流回流信号。",
+        tone: "warning",
+      });
+      refreshTrendSummary();
+      refreshSecurityData();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "导入失败";
+      setActionError({ title: "趋势快照导入失败", message, detail: "请确认 JSON 包含 source、tags、templateSignals 或 marketNotes。", tone: "error" });
+    }
   }
 
   function selectProject(projectId) {
@@ -673,7 +1021,17 @@ export default function App() {
   }
 
   if (!isAuthenticated) {
-    return <LoginScreen error={loginError} onLogin={handleLogin} onRegister={handleRegister} onBack={openLanding} />;
+    return (
+      <LoginScreen
+        error={loginError}
+        onLogin={handleLogin}
+        onRegister={handleRegister}
+        onAcceptInvite={handleAcceptInvite}
+        onRequestPasswordReset={handleRequestPasswordReset}
+        onConfirmPasswordReset={handleConfirmPasswordReset}
+        onBack={openLanding}
+      />
+    );
   }
 
   return (
@@ -916,7 +1274,24 @@ export default function App() {
 
             <section className="panel">
               <PanelHeader icon={BarChart3} eyebrow="TRENDS" title="数据洞察" />
-              <TrendPanel setDraftBrief={setDraftBrief} />
+              <TrendPanel
+                setDraftBrief={setDraftBrief}
+                trendSummary={trendSummary}
+                trendSnapshots={trendSnapshots}
+                canImportTrends={canEdit}
+                onRefreshTrends={refreshTrendSummary}
+                onImportTrendSnapshot={handleImportTrendSnapshot}
+              />
+            </section>
+
+            <section className="panel">
+              <PanelHeader icon={ShieldAlert} eyebrow="REVIEW" title="合规与相似度" />
+              {activeVersion && <CompliancePanel version={activeVersion} />}
+            </section>
+
+            <section className="panel">
+              <PanelHeader icon={MonitorPlay} eyebrow="STORYBOARD" title="分镜建议" />
+              {activeVersion && <StoryboardPanel version={activeVersion} />}
             </section>
 
             <section className="panel">
@@ -933,8 +1308,69 @@ export default function App() {
             </section>
 
             <section className="panel">
+              <PanelHeader icon={Store} eyebrow="MARKETPLACE" title="模板市场" />
+              <TemplateMarketplacePanel
+                workspace={workspace}
+                setWorkspace={setWorkspace}
+                templateInsights={templateInsights}
+                setDraftBrief={setDraftBrief}
+                setDraftParams={setDraftParams}
+              />
+            </section>
+
+            <section className="panel">
               <PanelHeader icon={Users} eyebrow="TEAM" title="团队权限" />
-              <TeamPanel workspace={workspace} setWorkspace={setWorkspace} canManageTeam={canManageTeam} />
+              <TeamPanel
+                workspace={workspace}
+                setWorkspace={setWorkspace}
+                canManageTeam={canManageTeam}
+                onUpdateMember={handleUpdateTeamMember}
+                onRemoveMember={handleRemoveTeamMember}
+              />
+            </section>
+
+            <section className="panel">
+              <PanelHeader icon={ShieldCheck} eyebrow="SECURITY" title="邀请与审计" />
+              <SecurityPanel
+                canManageTeam={canManageTeam}
+                inviteState={inviteState}
+                notificationState={notificationState}
+                auditState={auditState}
+                migrationPlan={migrationPlan}
+                onCreateInvite={handleCreateInvite}
+                onUpdateNotificationDelivery={handleUpdateNotificationDelivery}
+                onRefreshSecurity={refreshSecurityData}
+              />
+            </section>
+
+            <section className="panel">
+              <PanelHeader icon={KeyRound} eyebrow="ACCOUNT" title="账号安全" />
+              <AccountSecurityPanel user={authState.user} onChangePassword={handleChangePassword} />
+            </section>
+
+            <section className="panel">
+              <PanelHeader icon={Target} eyebrow="API" title="交付接口" />
+              <ApiHandoffPanel
+                activeProject={activeProject}
+                healthState={healthState}
+                migrationPlan={migrationPlan}
+                apiTokenState={apiTokenState}
+                canManageTokens={canManageTeam}
+                onCreateApiToken={handleCreateApiToken}
+                onRevokeApiToken={handleRevokeApiToken}
+                onDownloadPostgresExport={handleDownloadPostgresExport}
+              />
+            </section>
+
+            <section className="panel">
+              <PanelHeader icon={Wand2} eyebrow="INTERACTIVE" title="互动短剧" />
+              {activeProject && activeVersion && (
+                <InteractivePanel
+                  project={activeProject}
+                  activeVersion={activeVersion}
+                  onCreateInteractiveExperience={handleCreateInteractiveExperience}
+                />
+              )}
             </section>
 
             <section className="panel">
@@ -990,21 +1426,31 @@ function AuthLoading() {
   );
 }
 
-function LoginScreen({ error, onLogin, onRegister, onBack }) {
+function LoginScreen({ error, onLogin, onRegister, onAcceptInvite, onRequestPasswordReset, onConfirmPasswordReset, onBack }) {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("admin@djcytools.local");
   const [name, setName] = useState("");
   const [teamName, setTeamName] = useState("");
   const [password, setPassword] = useState("");
+  const [inviteToken, setInviteToken] = useState("");
+  const [resetToken, setResetToken] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const isRegister = mode === "register";
+  const isInvite = mode === "invite";
+  const isReset = mode === "reset";
 
   async function submit(event) {
     event.preventDefault();
     if (submitting) return;
     setSubmitting(true);
     try {
-      if (isRegister) {
+      if (isInvite) {
+        await onAcceptInvite({ token: inviteToken, password, name });
+      } else if (isReset && resetToken.trim()) {
+        await onConfirmPasswordReset({ token: resetToken, password });
+      } else if (isReset) {
+        await onRequestPasswordReset(email);
+      } else if (isRegister) {
         await onRegister({ email, password, name, teamName });
       } else {
         await onLogin({ email, password });
@@ -1017,6 +1463,7 @@ function LoginScreen({ error, onLogin, onRegister, onBack }) {
   function switchMode(nextMode) {
     setMode(nextMode);
     if (nextMode === "register" && email === "admin@djcytools.local") setEmail("");
+    if (nextMode === "invite") setEmail("");
   }
 
   return (
@@ -1026,20 +1473,28 @@ function LoginScreen({ error, onLogin, onRegister, onBack }) {
           <ScrollText size={22} />
         </div>
         <p className="eyebrow">TEAM WORKSPACE</p>
-        <h1>{isRegister ? "注册短剧叙事工厂" : "登录短剧叙事工厂"}</h1>
+        <h1>{isInvite ? "接受团队邀请" : isReset ? "重置账号密码" : isRegister ? "注册短剧叙事工厂" : "登录短剧叙事工厂"}</h1>
         <div className="auth-tabs" role="tablist" aria-label="账号入口">
-          <button className={!isRegister ? "selected" : ""} type="button" onClick={() => switchMode("login")}>
+          <button className={mode === "login" ? "selected" : ""} type="button" onClick={() => switchMode("login")}>
             登录
           </button>
           <button className={isRegister ? "selected" : ""} type="button" onClick={() => switchMode("register")}>
             邮箱注册
           </button>
+          <button className={isInvite ? "selected" : ""} type="button" onClick={() => switchMode("invite")}>
+            接受邀请
+          </button>
+          <button className={isReset ? "selected" : ""} type="button" onClick={() => switchMode("reset")}>
+            重置密码
+          </button>
         </div>
-        <label>
-          邮箱
-          <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" />
-        </label>
-        {isRegister && (
+        {!isInvite && (
+          <label>
+            邮箱
+            <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" />
+          </label>
+        )}
+        {(isRegister || isInvite) && (
           <label>
             姓名
             <input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" />
@@ -1051,21 +1506,47 @@ function LoginScreen({ error, onLogin, onRegister, onBack }) {
             <input value={teamName} onChange={(event) => setTeamName(event.target.value)} autoComplete="organization" />
           </label>
         )}
-        <label>
-          密码
-          <input
-            type="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            autoComplete={isRegister ? "new-password" : "current-password"}
-            minLength={isRegister ? 8 : undefined}
-          />
-        </label>
+        {isInvite && (
+          <label>
+            邀请 Token
+            <textarea rows={3} value={inviteToken} onChange={(event) => setInviteToken(event.target.value)} />
+          </label>
+        )}
+        {isReset && (
+          <label>
+            重置 Token
+            <textarea rows={3} value={resetToken} onChange={(event) => setResetToken(event.target.value)} placeholder="留空则先申请重置 Token" />
+          </label>
+        )}
+        {(!isReset || resetToken.trim()) && (
+          <label>
+            密码
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              autoComplete={isRegister || isInvite || isReset ? "new-password" : "current-password"}
+              minLength={isRegister || isInvite || isReset ? 8 : undefined}
+            />
+          </label>
+        )}
         {isRegister && <p className="muted-note">注册后会自动创建个人团队，并以所有者身份登录。</p>}
+        {isInvite && <p className="muted-note">团队所有者生成邀请 Token 后，成员可在这里设置密码并加入团队。</p>}
+        {isReset && <p className="muted-note">本地 MVP 会直接返回重置 Token，并写入团队所有者可见的通知发件箱。</p>}
         {error && <p className="auth-error">{error}</p>}
         <button className="primary-action" type="submit" disabled={submitting}>
           <LogIn size={18} />
-          {submitting ? (isRegister ? "注册中..." : "登录中...") : isRegister ? "注册并进入工作台" : "登录工作台"}
+          {submitting
+            ? "处理中..."
+            : isInvite
+              ? "接受邀请并进入"
+              : isReset
+                ? resetToken.trim()
+                  ? "确认重置密码"
+                  : "申请重置 Token"
+                : isRegister
+                  ? "注册并进入工作台"
+                  : "登录工作台"}
         </button>
         <button className="secondary-action" type="button" onClick={onBack}>
           <Home size={15} />

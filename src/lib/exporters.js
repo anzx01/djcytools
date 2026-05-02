@@ -67,6 +67,27 @@ export function buildProjectText(project, version) {
     "投流开场",
     ...version.adHooks,
     "",
+    "分镜建议",
+    ...((version.storyboards || []).flatMap((board) => [
+      `第 ${board.episodeNumber} 集：${board.title}`,
+      ...(board.shots || []).map((shot) => `${shot.time}｜画面：${shot.frame}｜镜头：${shot.camera}｜声音：${shot.sound}｜道具：${shot.prop}`),
+      "",
+    ])),
+    "合规与相似度",
+    `合规：${version.complianceReport?.level || "未检测"}｜风险分 ${version.complianceReport?.riskScore ?? "-"}`,
+    `相似度：${version.similarityReport?.level || "未检测"}｜最高 ${(version.similarityReport?.maxSimilarity || 0) * 100}%`,
+    ...((version.complianceReport?.suggestions || []).map((item) => `建议：${item}`)),
+    "",
+    "互动短剧体验",
+    ...((project.interactiveExperiences || []).length
+      ? project.interactiveExperiences.slice(0, 3).flatMap((experience) => [
+          `${experience.name}｜${experience.persona}｜${experience.mood}`,
+          experience.opening,
+          ...(experience.choices || []).map((choice) => `${choice.setup}：${choice.options?.map((option) => option.label).join(" / ")}`),
+          "",
+        ])
+      : ["暂无互动体验。"]),
+    "",
     "投流结果回流",
     ...(campaignResults.length
       ? campaignResults.map((result) => {
