@@ -10,6 +10,10 @@ function download(filename, content, type) {
   URL.revokeObjectURL(url);
 }
 
+export function downloadTextFile(filename, content, type = "text/plain;charset=utf-8") {
+  download(filename, content, type);
+}
+
 export function sanitizeFilename(value) {
   return String(value || "djcytools")
     .replace(/[\\/:*?"<>|]/g, "-")

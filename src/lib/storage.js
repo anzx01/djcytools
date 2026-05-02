@@ -23,6 +23,7 @@ export function normalizeWorkspace(value) {
       versions: Array.isArray(project.versions) ? project.versions : [],
       campaignResults: Array.isArray(project.campaignResults) ? project.campaignResults : [],
       interactiveExperiences: Array.isArray(project.interactiveExperiences) ? project.interactiveExperiences : [],
+      videoSamples: Array.isArray(project.videoSamples) ? project.videoSamples : [],
     };
     return {
       ...normalizedProject,

@@ -15,6 +15,7 @@ test("normalizeWorkspace repairs old workspace payloads", () => {
   assert.equal(workspace.activeProjectId, "p1");
   assert.deepEqual(workspace.projects[0].exports, []);
   assert.deepEqual(workspace.projects[0].campaignResults, []);
+  assert.deepEqual(workspace.projects[0].videoSamples, []);
   assert.equal(workspace.team.members.length, 3);
   assert.deepEqual(workspace.customTemplates, []);
 

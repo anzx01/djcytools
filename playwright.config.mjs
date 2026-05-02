@@ -38,6 +38,11 @@ export default defineConfig({
       DJCYTOOLS_PUBLIC_API_TOKEN: "e2e-public-token",
       DJCYTOOLS_PUBLIC_API_BASE_URL: baseURL,
       DEEPSEEK_API_KEY: "",
+      DJCYTOOLS_VIDEO_API_KEY: "",
+      DJCYTOOLS_REAL_VIDEO_API_KEY: "",
+      DJCYTOOLS_AI_API_KEY: "",
+      DOUBAO_API_KEY: "",
+      ARK_API_KEY: "",
     },
   },
 });

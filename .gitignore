@@ -8,6 +8,7 @@ data/*.json
 data/*.tmp
 data/*.sqlite
 data/*.sqlite-*
+data/generated-videos/
 .e2e-data
 test-results
 playwright-report

@@ -15,6 +15,7 @@ import {
   MonitorPlay,
   PenLine,
   Plus,
+  Clapperboard,
   ScrollText,
   ShieldAlert,
   ShieldCheck,
@@ -101,6 +102,7 @@ import {
   TemplateMarketplacePanel,
   TemplateManager,
   TrendPanel,
+  VideoSamplePanel,
   VersionPanel,
 } from "./components/workbench/WorkbenchPanels.jsx";
 import LandingPage from "./LandingPage.jsx";
@@ -625,7 +627,7 @@ export default function App() {
           {
             id: uid("comment"),
             author: "系统",
-            text: `已使用 DeepSeek 完成「${instruction}」，并生成新版本。`,
+              text: `已使用 DeepSeek 完成「${instruction}」，并生成新版本。`,
             createdAt: new Date().toISOString(),
           },
           ...project.comments,
@@ -1393,6 +1395,17 @@ export default function App() {
                   project={activeProject}
                   activeVersion={activeVersion}
                   onCreateInteractiveExperience={handleCreateInteractiveExperience}
+                />
+              )}
+            </section>
+
+            <section className="panel">
+              <PanelHeader icon={Clapperboard} eyebrow="SEEDANCE" title="真实视频" />
+              {activeProject && activeVersion && (
+                <VideoSamplePanel
+                  project={activeProject}
+                  activeVersion={activeVersion}
+                  canEdit={canEdit}
                 />
               )}
             </section>

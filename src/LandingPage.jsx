@@ -27,7 +27,7 @@ import {
 import workbenchPreview from "../image/README/1777172899013.png";
 import { templates, templateTypes } from "./data/templates.js";
 
-// 设计方向：短剧战争室 + 编辑部工业感，服务 AI 短剧剧本生成器、短剧出海模板、DeepSeek 短剧生成等核心关键词。
+// 设计方向：短剧战争室 + 编辑部工业感，服务 AI 短剧剧本生成器、短剧出海模板、DeepSeek 剧本生成和 Doubao 视频样片等核心关键词。
 const heroMetrics = [
   { value: String(templates.length), label: "热门模板" },
   { value: String(templateTypes.length), label: "类型分组" },
@@ -80,7 +80,7 @@ const benefits = [
   },
   {
     icon: LockKeyhole,
-    title: "DeepSeek Key 不进前端",
+    title: "模型 Key 不进前端",
     text: "前端只调用本地代理，密钥保留在服务端环境变量中，适合继续接真实团队账号。",
   },
   {
@@ -107,6 +107,7 @@ const benefits = [
 
 const proof = [
   "DeepSeek 生成与定向改写",
+  "Doubao-Seed-2.0 视频样片",
   "SQLite 持久化与审计",
   "AI 调用日志与成本统计",
   "TXT / PDF / DOC / JSON 导出",
@@ -139,12 +140,12 @@ const testimonials = [
 
 const faqItems = [
   {
-    question: "DeepSeek API Key 会不会暴露在浏览器里？",
+    question: "DeepSeek 和 Doubao / 火山方舟 API Key 会不会暴露在浏览器里？",
     answer: "不会。当前实现通过服务端代理读取 .env，前端只调用本地 API，生产构建不会把 Key 打进浏览器 bundle。",
   },
   {
     question: "外部 AI 接口失败时还能用吗？",
-    answer: "可以。工作台保留本地兜底生成逻辑，DeepSeek 临时失败不会阻断立项、编辑和导出流程。",
+    answer: "可以。工作台保留本地兜底生成逻辑，DeepSeek 或 Doubao-Seed-2.0 临时失败不会阻断立项、编辑和导出流程。",
   },
   {
     question: "模板能继续扩展吗？",
@@ -225,10 +226,10 @@ export default function LandingPage({ onLaunch }) {
         </div>
 
         <div className="hero-copy">
-          <p className="landing-kicker">AI 短剧剧本生成器 / DeepSeek 短剧生成</p>
+          <p className="landing-kicker">AI 短剧剧本生成器 / DeepSeek 剧本 + Doubao 视频样片</p>
           <h1>把短剧创意变成可拍、可改、可投流的中文剧本资产</h1>
           <p>
-            DJCYTools 用 DeepSeek、热门短剧模板、结构化编辑器和版本实验，把短剧出海团队从零散灵感推进到可导出的剧本方案。
+            DJCYTools 用 DeepSeek、Doubao-Seed-2.0、热门短剧模板、结构化编辑器和版本实验，把短剧出海团队从零散灵感推进到可导出的剧本和样片制作包。
           </p>
           <div className="hero-actions">
             <button className="landing-primary" type="button" onClick={onLaunch}>
@@ -463,7 +464,7 @@ export default function LandingPage({ onLaunch }) {
             <p className="landing-kicker">Start Now</p>
             <h2>今晚把下一个短剧项目从灵感推进到可导出的首版方案</h2>
             <p>
-              先用模板选题，再让 DeepSeek 生成首版，最后用评分、版本和导出把讨论落到文件里。
+              先用模板选题，再让 DeepSeek 生成首版，最后用评分、版本、Doubao 视频样片和导出把讨论落到文件里。
             </p>
             <div className="final-cta-actions">
               <button className="landing-primary" type="button" onClick={onLaunch}>

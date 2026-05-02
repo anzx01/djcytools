@@ -1,6 +1,6 @@
 # DJCYTools AI 短剧叙事工厂
 
-DJCYTools 是一个面向短剧出海团队的本地全栈 MVP。它把落地页、账号登录、团队角色、DeepSeek 生成、结构化剧本编辑、版本实验、趋势参考、60 个热门模板、导出、投流回流、SQLite 持久化、访问埋点和 AI 调用日志串成完整闭环。
+DJCYTools 是一个面向短剧出海团队的本地全栈 MVP。它把落地页、账号登录、团队角色、DeepSeek 剧本生成、Doubao-Seed-2.0 视频样片、结构化剧本编辑、版本实验、趋势参考、60 个热门模板、导出、投流回流、SQLite 持久化、访问埋点和 AI 调用日志串成完整闭环。
 
 ![1777184657560](image/README/1777184657560.png)
 
@@ -60,10 +60,26 @@ http://127.0.0.1:4173/
 复制 `.env.example` 为 `.env` 并填写：
 
 ```text
-DEEPSEEK_API_KEY=your_deepseek_api_key
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-v4-flash
-DEEPSEEK_TIMEOUT_MS=70000
+# 剧本生成：DeepSeek
+DJCYTOOLS_SCRIPT_API_KEY=your_deepseek_api_key
+DJCYTOOLS_SCRIPT_PROVIDER=DeepSeek
+DJCYTOOLS_SCRIPT_BASE_URL=https://api.deepseek.com
+DJCYTOOLS_SCRIPT_MODEL=deepseek-chat
+DJCYTOOLS_SCRIPT_TIMEOUT_MS=70000
+
+# 视频样片生成：火山方舟 / Doubao-Seed-2.0
+DJCYTOOLS_VIDEO_API_KEY=your_volcengine_ark_api_key
+DJCYTOOLS_VIDEO_PROVIDER=Doubao-Seed-2.0
+DJCYTOOLS_VIDEO_ENDPOINT=https://ark.cn-beijing.volces.com/api/v3/responses
+DJCYTOOLS_VIDEO_MODEL=doubao-seed-2-0-mini-260215
+DJCYTOOLS_VIDEO_TIMEOUT_MS=90000
+
+# 真实视频生成：火山方舟 / Doubao Seedance 视频任务 API
+DJCYTOOLS_REAL_VIDEO_API_KEY=your_volcengine_ark_api_key
+DJCYTOOLS_REAL_VIDEO_PROVIDER=Doubao-Seedance-2.0
+DJCYTOOLS_REAL_VIDEO_ENDPOINT=https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks
+DJCYTOOLS_REAL_VIDEO_MODEL=doubao-seedance-2-0-260128
+DJCYTOOLS_REAL_VIDEO_TIMEOUT_MS=90000
 DJCYTOOLS_MAX_BODY_BYTES=1048576
 DJCYTOOLS_REQUEST_TIMEOUT_MS=30000
 DJCYTOOLS_RATE_LIMIT_WINDOW_MS=60000
@@ -85,9 +101,9 @@ DJCYTOOLS_NOTIFICATION_TIMEOUT_MS=10000
 DJCYTOOLS_DATABASE_URL=postgresql://user:pass@host:5432/djcytools
 ```
 
-`.env` 已被 `.gitignore` 忽略。DeepSeek API Key 只在服务端代理中使用，不会打进前端 bundle。
+`.env` 已被 `.gitignore` 忽略。DeepSeek 与 Doubao / 火山方舟 API Key 只在服务端代理中使用，不会打进前端 bundle。
 
-如果曾经在聊天、截图或公开文档中暴露过真实 Key，请在 DeepSeek 控制台轮换密钥后再更新本地 `.env`。
+如果曾经在聊天、截图或公开文档中暴露过真实 Key，请在对应平台控制台轮换密钥后再更新本地 `.env`。
 
 首次启动会按环境变量创建默认所有者账号。未配置时默认账号为 `admin@djcytools.local`，默认密码为 `DJCYTools@2026`；本地自测可以直接使用，上线或分享前请改掉 `DJCYTOOLS_ADMIN_PASSWORD`。
 
@@ -96,6 +112,9 @@ DJCYTOOLS_DATABASE_URL=postgresql://user:pass@host:5432/djcytools
 - 产品落地页：SEO 标题、结构化数据、首屏 CTA、社会证明、真实产品截图、工作流、模板展示、核心收益、试用反馈、FAQ、最终 CTA、Footer
 - DeepSeek 生成短剧项目，输出简体中文结构化 JSON
 - DeepSeek 定向改写：提高冲突、投流钩子、降低狗血度、本地化表达、评分建议改写
+- Doubao-Seed-2.0 生成 15 秒竖屏短剧样片制作包：浏览器动态视频预览、WebM 导出、镜头时间线、SRT 字幕、旁白、视觉提示词、制作包、渲染清单和 JSON
+- Doubao Seedance 视频任务 API 生成真实 9:16 视频片段，并在工作台轮询任务状态、成功后直接播放/打开视频 URL
+- 真实视频任务支持参考图、参考视频、参考音频、`generate_audio` 和比例配置；测试阶段时长固定 15 秒，符合 seedance 2.0 单次生成上限
 - 本地兜底生成，外部 API 失败时不阻塞工作流
 - 结构化剧本编辑：剧名、卖点、人设、大纲、前 3 集脚本、核心对白
 - 生成前准备度：检查项目名、情绪痛点、目标观众、模板、集数和钩子密度
@@ -132,8 +151,8 @@ DJCYTOOLS_DATABASE_URL=postgresql://user:pass@host:5432/djcytools
 - JSON 迁移：首次启动会把旧 `data/workspace.json`、`data/ai-logs.json`、`data/analytics.json` 导入 SQLite
 - 数据埋点：匿名记录落地页和工作台访问量、独立访客、最近访问时间，并在工作台运行状态展示
 - AI 调用日志：模型、token、耗时、估算成本、成功/失败状态
-- P0 稳定性：API 请求体限制、DeepSeek 超时、简单限流、静态资源缓存、安全响应头、统一错误码
-- 错误体验：DeepSeek 失败和服务端同步失败会在工作台展示可读提示，并保留本地兜底结果
+- P0 稳定性：API 请求体限制、DeepSeek / Doubao-Seed-2.0 超时、简单限流、静态资源缓存、安全响应头、统一错误码
+- 错误体验：DeepSeek、Doubao-Seed-2.0 或服务端同步失败会在工作台展示可读提示，并保留本地兜底结果
 - 测试门禁：Node 内置测试覆盖生成器、工作区归一化、导出、投流指标；Playwright E2E 覆盖落地页、登录、项目草稿、邀请发件箱和公开 API 鉴权
 - 开发服务器和生产服务器共用同一套 API 内核
 
@@ -220,6 +239,9 @@ POST /api/trends/snapshots
 GET  /api/storage/migration-plan
 GET  /api/storage/postgres-export
 POST /api/generate-script
+POST /api/generate-video-sample
+POST /api/real-video/tasks
+GET  /api/real-video/tasks/:id
 GET  /api/public/openapi.json
 GET  /api/public/health
 GET  /api/public/projects
@@ -247,7 +269,7 @@ data/analytics.json      旧数据迁移来源，不再作为主存储
 
 这些文件默认被 `.gitignore` 忽略。
 
-埋点只区分 `landing` 和 `workbench` 两类页面。前端生成匿名访客 ID，服务端只保存哈希后的访客标识、页面类型和访问时间，不保存 DeepSeek Key、IP 或原始访客 ID。
+埋点只区分 `landing` 和 `workbench` 两类页面。前端生成匿名访客 ID，服务端只保存哈希后的访客标识、页面类型和访问时间，不保存 DeepSeek、Doubao / 火山方舟 Key、IP 或原始访客 ID。
 
 工作区备份文件包含项目、版本、评论、团队成员和自定义模板，可通过工作台右侧「运行状态」面板导入恢复。
 
@@ -261,6 +283,7 @@ src/data/templates.js        60 个模板和市场配置
 src/data/trends.js           趋势和模板信号
 src/lib/generator.js         本地生成、评分、分镜、合规、相似度、互动体验工具
 src/lib/deepseekClient.js    前端调用 DeepSeek 代理
+src/lib/videoSampleClient.js 前端调用 Doubao-Seed-2.0 视频样片代理
 src/lib/workspaceApi.js      前端工作区、项目 CRUD、团队安全、趋势、AI 日志和埋点 API
 server/apiCore.mjs           共享 API 内核
 server/database.mjs          SQLite schema、迁移、会话、邀请、密码重置、审计和权限

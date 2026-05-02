@@ -602,7 +602,6 @@ function stripProjectCollections(project) {
     comments: undefined,
     exports: undefined,
     campaignResults: undefined,
-    interactiveExperiences: undefined,
   };
 }
 
@@ -624,6 +623,7 @@ function normalizeProjectPayload(project, fallback = {}) {
     exports: Array.isArray(source.exports) ? source.exports : fallback.exports || [],
     campaignResults: Array.isArray(source.campaignResults) ? source.campaignResults : fallback.campaignResults || [],
     interactiveExperiences: Array.isArray(source.interactiveExperiences) ? source.interactiveExperiences : fallback.interactiveExperiences || [],
+    videoSamples: Array.isArray(source.videoSamples) ? source.videoSamples : fallback.videoSamples || [],
   };
   merged.activeVersionId = source.activeVersionId || fallback.activeVersionId || merged.versions[0]?.id || "";
   return merged;

@@ -52,6 +52,15 @@ test("owner can create an invite and mark its notification as sent", async ({ pa
   await expect(notification).toContainText("已发送");
 });
 
+test("owner sees real video controls without local preview or sample generation", async ({ page }) => {
+  await login(page);
+
+  await expect(page.getByRole("heading", { name: "真实视频" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /生成 15 秒样片/ })).toHaveCount(0);
+  await expect(page.locator(".canvas-video-preview")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /生成15秒真实视频/ }).first()).toBeVisible();
+});
+
 test("public delivery health requires and accepts the configured API token", async ({ request }) => {
   const denied = await request.get("/api/public/health");
   expect(denied.status()).toBe(401);

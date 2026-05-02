@@ -6,18 +6,18 @@
     <meta name="theme-color" content="#f5f1e8" />
     <meta
       name="description"
-      content="DJCYTools 是面向短剧出海团队的 AI 短剧剧本生成器，支持 DeepSeek 中文生成、60 个热门模板、版本实验、评分、导出和团队协作。"
+      content="DJCYTools 是面向短剧出海团队的 AI 短剧剧本生成器，支持 DeepSeek 中文剧本生成、Doubao-Seed-2.0 视频样片、60 个热门模板、版本实验、评分、导出和团队协作。"
     />
     <meta
       name="keywords"
-      content="AI短剧剧本生成器,DeepSeek短剧生成,短剧出海模板,短剧剧本工具,中文短剧生成"
+      content="AI短剧剧本生成器,DeepSeek短剧生成,Doubao短剧样片,短剧出海模板,短剧剧本工具,中文短剧生成"
     />
     <meta property="og:title" content="DJCYTools AI 短剧叙事工厂" />
     <meta
       property="og:description"
-      content="用 DeepSeek 和热门短剧模板，把创意变成可拍、可改、可投流的中文剧本资产。"
+      content="用 DeepSeek、Doubao-Seed-2.0 和热门短剧模板，把创意变成可拍、可改、可投流的中文剧本与样片制作包。"
     />
-    <title>DJCYTools AI 短剧剧本生成器 | DeepSeek 短剧生成与出海模板</title>
+    <title>DJCYTools AI 短剧剧本生成器 | DeepSeek 剧本与 Doubao 视频样片</title>
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
@@ -27,9 +27,10 @@
             "name": "DJCYTools AI 短剧叙事工厂",
             "applicationCategory": "BusinessApplication",
             "operatingSystem": "Web",
-            "description": "面向短剧出海团队的 AI 短剧剧本生成器，支持 DeepSeek 中文生成、热门模板、版本实验、评分、导出和团队协作。",
+            "description": "面向短剧出海团队的 AI 短剧剧本生成器，支持 DeepSeek 中文生成、Doubao-Seed-2.0 视频样片、热门模板、版本实验、评分、导出和团队协作。",
             "featureList": [
               "DeepSeek 中文短剧生成",
+              "Doubao-Seed-2.0 视频样片",
               "60 个热门短剧模板",
               "结构化剧本编辑",
               "版本实验和评分",
@@ -46,7 +47,7 @@
             "mainEntity": [
               {
                 "@type": "Question",
-                "name": "DeepSeek API Key 会不会暴露在浏览器里？",
+                "name": "DeepSeek 和 Doubao / 火山方舟 API Key 会不会暴露在浏览器里？",
                 "acceptedAnswer": {
                   "@type": "Answer",
                   "text": "不会。当前实现通过服务端代理读取 .env，前端只调用本地 API，生产构建不会把 Key 打进浏览器 bundle。"
@@ -57,7 +58,7 @@
                 "name": "外部 AI 接口失败时还能用吗？",
                 "acceptedAnswer": {
                   "@type": "Answer",
-                  "text": "可以。工作台保留本地兜底生成逻辑，DeepSeek 临时失败不会阻断立项、编辑和导出流程。"
+                  "text": "可以。工作台保留本地兜底生成逻辑，DeepSeek 或 Doubao-Seed-2.0 临时失败不会阻断立项、编辑和导出流程。"
                 }
               },
               {

@@ -27,7 +27,10 @@ import {
 import { templates } from "../../data/templates";
 import { lastTrendUpdated, marketNotes, templateSignals, trendTags } from "../../data/trends";
 import { getTemplate, uid } from "../../lib/generator";
-import { calculateCampaignMetrics, exportDoc, exportJson, exportText, printPdf } from "../../lib/exporters";
+import { createRealVideoTask, fetchGeneratedVideos, fetchRealVideoTask, isRealVideoTaskDone, isRealVideoTaskFailed } from "../../lib/realVideoClient";
+import { calculateCampaignMetrics, downloadTextFile, exportDoc, exportJson, exportText, printPdf, sanitizeFilename } from "../../lib/exporters";
+
+const REAL_VIDEO_TEST_DURATION_SECONDS = 15;
 
 function formatDate(value) {
   return new Date(value).toLocaleString("zh-CN", {
@@ -36,6 +39,49 @@ function formatDate(value) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function compactWorkbenchText(value = "", limit = 120) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length > limit ? `${text.slice(0, limit)}...` : text;
+}
+
+function buildScriptVideoFallback({ project, version, ratio = "9:16" }) {
+  const episode = Array.isArray(version?.episodes) ? version.episodes[0] || {} : {};
+  const title = version?.selectedTitle || version?.name || project?.name || "当前短剧";
+  const dialogue = Array.isArray(episode.dialogue) ? episode.dialogue.filter(Boolean) : [];
+  const frame = compactWorkbenchText(episode.hook || episode.script || version?.logline || title, 120);
+  const subtitle = compactWorkbenchText(dialogue[0] || episode.hook || version?.logline || title, 72);
+  const shot = {
+    id: "script-real-video-shot",
+    position: 1,
+    episodeNumber: episode.number || 1,
+    episodeTitle: episode.title || title,
+    start: 0,
+    end: REAL_VIDEO_TEST_DURATION_SECONDS,
+    duration: REAL_VIDEO_TEST_DURATION_SECONDS,
+    title: episode.title || "剧本直出真实视频",
+    frame,
+    camera: "写实竖屏短剧，前 3 秒明确冲突，移动端近景构图",
+    sound: "同步人声、环境声和短剧氛围音乐",
+    prop: compactWorkbenchText(episode.prop || "", 60),
+    subtitle,
+    voiceover: compactWorkbenchText(dialogue.join("；"), 120),
+    visualPrompt: `${ratio} vertical realistic short drama, based on the current script "${title}", cinematic mobile framing, clear conflict in first 3 seconds, natural acting, subtitle-safe composition`,
+    assetStatus: "script_ready",
+  };
+  return {
+    id: "script-real-video-sample",
+    name: `${title} 15秒真实视频`,
+    source: "当前剧本",
+    status: "script_ready",
+    format: ratio,
+    duration: REAL_VIDEO_TEST_DURATION_SECONDS,
+    voice: "同步音频",
+    style: "写实竖屏短剧",
+    logline: version?.logline || frame,
+    shots: [shot],
+  };
 }
 
 const deliveryStatusLabels = {
@@ -1234,6 +1280,298 @@ export function InteractivePanel({ project, activeVersion, onCreateInteractiveEx
         {experiences.length === 0 && <p className="muted-note">可基于当前版本生成 C 端互动短剧雏形。</p>}
       </div>
       {activeVersion && <p className="muted-note">当前来源：{activeVersion.selectedTitle || activeVersion.name}</p>}
+    </div>
+  );
+}
+
+export function VideoSamplePanel({ project, activeVersion, canEdit = true }) {
+  const [activeShotIndex, setActiveShotIndex] = useState(0);
+  const [realVideoTask, setRealVideoTask] = useState(null);
+  const [isCreatingRealVideo, setIsCreatingRealVideo] = useState(false);
+  const [realVideoError, setRealVideoError] = useState("");
+  const [generatedVideos, setGeneratedVideos] = useState([]);
+  const [generatedVideosError, setGeneratedVideosError] = useState("");
+  const [realVideoOptions, setRealVideoOptions] = useState({
+    ratio: "9:16",
+    duration: REAL_VIDEO_TEST_DURATION_SECONDS,
+    generateAudio: true,
+    firstFrameImageUrl: "",
+    endFrameImageUrl: "",
+    referenceVideoUrl: "",
+    referenceAudioUrl: "",
+  });
+  const scriptVideoSample = buildScriptVideoFallback({ project, version: activeVersion, ratio: realVideoOptions.ratio });
+  const realVideoSample = scriptVideoSample;
+  const activeShot = realVideoSample?.shots?.[activeShotIndex] || realVideoSample?.shots?.[0] || null;
+  const realVideoFailed = isRealVideoTaskFailed(realVideoTask?.status);
+  const realVideoDone = isRealVideoTaskDone(realVideoTask?.status);
+  const activeRealVideoUrl = realVideoTask?.localVideoUrl || realVideoTask?.videoUrl || "";
+
+  async function refreshGeneratedVideos() {
+    setGeneratedVideosError("");
+    try {
+      const data = await fetchGeneratedVideos();
+      setGeneratedVideos(Array.isArray(data.videos) ? data.videos : []);
+    } catch (error) {
+      setGeneratedVideosError(error instanceof Error ? error.message : "读取本地真实视频失败");
+    }
+  }
+
+  useEffect(() => {
+    refreshGeneratedVideos();
+  }, []);
+
+  useEffect(() => {
+    setActiveShotIndex(0);
+    setRealVideoTask(null);
+    setRealVideoError("");
+  }, [activeVersion?.id]);
+
+  useEffect(() => {
+    if (!realVideoTask?.id || realVideoDone || realVideoFailed) return undefined;
+    let cancelled = false;
+    let polling = false;
+    let timeout = 0;
+    let interval = 0;
+
+    const stopPolling = () => {
+      if (timeout) window.clearTimeout(timeout);
+      if (interval) window.clearInterval(interval);
+      timeout = 0;
+      interval = 0;
+    };
+
+    const pollTask = async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        const data = await fetchRealVideoTask(realVideoTask.id);
+        if (cancelled) return;
+        setRealVideoTask(data.task);
+        if (data.task?.errorHint || data.task?.error) setRealVideoError(data.task.errorHint || data.task.error);
+        if (isRealVideoTaskDone(data.task?.status) || isRealVideoTaskFailed(data.task?.status)) stopPolling();
+        if (isRealVideoTaskDone(data.task?.status) && (data.task?.localVideoUrl || data.task?.videoUrl)) refreshGeneratedVideos();
+      } catch (error) {
+        if (cancelled) return;
+        setRealVideoError(error instanceof Error ? error.message : "真实视频任务查询失败");
+      } finally {
+        polling = false;
+      }
+    };
+
+    timeout = window.setTimeout(pollTask, 2500);
+    interval = window.setInterval(pollTask, 6000);
+    return () => {
+      cancelled = true;
+      stopPolling();
+    };
+  }, [realVideoTask?.id, realVideoDone, realVideoFailed]);
+
+  async function createRealVideo() {
+    if (!canEdit || !activeVersion || !realVideoSample || !activeShot || isCreatingRealVideo) return;
+    setIsCreatingRealVideo(true);
+    setRealVideoError("");
+    try {
+      const data = await createRealVideoTask({
+        project,
+        version: activeVersion,
+        sample: realVideoSample,
+        shot: activeShot,
+        duration: REAL_VIDEO_TEST_DURATION_SECONDS,
+        ratio: realVideoOptions.ratio,
+        generateAudio: realVideoOptions.generateAudio,
+        references: {
+          firstFrameImageUrl: realVideoOptions.firstFrameImageUrl,
+          endFrameImageUrl: realVideoOptions.endFrameImageUrl,
+          videoUrl: realVideoOptions.referenceVideoUrl,
+          audioUrl: realVideoOptions.referenceAudioUrl,
+        },
+      });
+      setRealVideoTask(data.task);
+      if (data.task?.errorHint || data.task?.error) setRealVideoError(data.task.errorHint || data.task.error);
+    } catch (error) {
+      setRealVideoError(error instanceof Error ? error.message : "真实视频任务提交失败");
+    } finally {
+      setIsCreatingRealVideo(false);
+    }
+  }
+
+  return (
+    <div className="video-sample-panel">
+      <div className="video-sample-actions">
+        <button className="secondary-action strong" type="button" onClick={createRealVideo} disabled={!canEdit || !activeVersion || isCreatingRealVideo}>
+          <MonitorPlay size={15} />
+          {isCreatingRealVideo ? "提交中" : canEdit ? "生成15秒真实视频" : "查看者无生成权限"}
+        </button>
+      </div>
+
+      {activeVersion && activeShot && (
+        <div className="sample-preview-grid">
+          <div className="real-video-stack">
+            {activeRealVideoUrl && <video className="rendered-video-preview real-video" controls src={activeRealVideoUrl} />}
+            {activeVersion && (
+              <div className="real-video-options">
+                <label>
+                  比例
+                  <select
+                    value={realVideoOptions.ratio}
+                    onChange={(event) => setRealVideoOptions((current) => ({ ...current, ratio: event.target.value }))}
+                  >
+                    <option value="9:16">9:16</option>
+                    <option value="16:9">16:9</option>
+                    <option value="1:1">1:1</option>
+                    <option value="3:4">3:4</option>
+                    <option value="4:3">4:3</option>
+                  </select>
+                </label>
+                <label>
+                  秒数（测试固定）
+                  <input
+                    max="15"
+                    min="15"
+                    type="number"
+                    value={REAL_VIDEO_TEST_DURATION_SECONDS}
+                    disabled
+                    onChange={() => {}}
+                  />
+                </label>
+                <label className="checkbox-line">
+                  <input
+                    checked={realVideoOptions.generateAudio}
+                    type="checkbox"
+                    onChange={(event) => setRealVideoOptions((current) => ({ ...current, generateAudio: event.target.checked }))}
+                  />
+                  生成音频
+                </label>
+                <input
+                  placeholder="首帧参考图 URL"
+                  value={realVideoOptions.firstFrameImageUrl}
+                  onChange={(event) => setRealVideoOptions((current) => ({ ...current, firstFrameImageUrl: event.target.value }))}
+                />
+                <input
+                  placeholder="尾帧参考图 URL"
+                  value={realVideoOptions.endFrameImageUrl}
+                  onChange={(event) => setRealVideoOptions((current) => ({ ...current, endFrameImageUrl: event.target.value }))}
+                />
+                <input
+                  placeholder="参考视频 URL"
+                  value={realVideoOptions.referenceVideoUrl}
+                  onChange={(event) => setRealVideoOptions((current) => ({ ...current, referenceVideoUrl: event.target.value }))}
+                />
+                <input
+                  placeholder="参考音频 URL"
+                  value={realVideoOptions.referenceAudioUrl}
+                  onChange={(event) => setRealVideoOptions((current) => ({ ...current, referenceAudioUrl: event.target.value }))}
+                />
+              </div>
+            )}
+            {realVideoTask && (
+              <div className={`real-video-task ${realVideoFailed ? "failed" : ""}`}>
+                <b>{activeRealVideoUrl ? "真实视频已生成" : realVideoFailed ? "真实视频生成失败" : "真实视频生成中"}</b>
+                <span>任务 {realVideoTask.id || "-"} · {realVideoTask.status || "submitted"}</span>
+                {(realVideoTask.errorHint || realVideoTask.error) && <small>{realVideoTask.errorHint || realVideoTask.error}</small>}
+                {realVideoTask.errorHelpUrl && (
+                  <a href={realVideoTask.errorHelpUrl} target="_blank" rel="noreferrer">
+                    打开模型开通页
+                  </a>
+                )}
+                {activeRealVideoUrl && (
+                  <a href={activeRealVideoUrl} target="_blank" rel="noreferrer">
+                    打开视频
+                  </a>
+                )}
+              </div>
+            )}
+            {(generatedVideos.length > 0 || generatedVideosError) && (
+              <div className="generated-video-list">
+                <div className="generated-video-list-head">
+                  <b>本地真实视频</b>
+                  <button className="mini-action" type="button" onClick={refreshGeneratedVideos}>
+                    <RefreshCcw size={13} />
+                    刷新
+                  </button>
+                </div>
+                {generatedVideos.slice(0, 4).map((video) => (
+                  <button
+                    className={video.localVideoUrl === activeRealVideoUrl ? "active" : ""}
+                    key={video.taskId}
+                    type="button"
+                    onClick={() => {
+                      setRealVideoTask({
+                        id: video.taskId,
+                        status: video.status || "succeeded",
+                        videoUrl: video.sourceVideoUrl || "",
+                        localVideoUrl: video.localVideoUrl,
+                      });
+                      setRealVideoError("");
+                    }}
+                  >
+                    <b>{video.taskId}</b>
+                    <small>
+                      {[video.status || "succeeded", video.duration ? `${video.duration}s` : "", video.ratio, video.downloadedAt ? formatDate(video.downloadedAt) : ""]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </small>
+                  </button>
+                ))}
+                {generatedVideosError && <small>{generatedVideosError}</small>}
+              </div>
+            )}
+            {realVideoError && <p className="muted-note">{realVideoError}</p>}
+          </div>
+          <div className="sample-meta">
+            <div className="panel-inline-head">
+              <span className="timestamp">{realVideoSample.source || realVideoSample.status} · {REAL_VIDEO_TEST_DURATION_SECONDS}s · {realVideoSample.voice}</span>
+            </div>
+            <b>{realVideoSample.name}</b>
+            <p>{realVideoSample.logline}</p>
+            <div className="sample-render-status">
+              <span className={activeRealVideoUrl ? "ready" : "pending"}>
+                <b>{activeRealVideoUrl ? "已生成" : "待生成"}</b>
+                真实视频
+              </span>
+              <span className="ready">
+                <b>{REAL_VIDEO_TEST_DURATION_SECONDS}s</b>
+                时长
+              </span>
+              <span className="ready">
+                <b>{realVideoOptions.ratio}</b>
+                比例
+              </span>
+            </div>
+            <div className="shot-timeline">
+              {(realVideoSample.shots || []).map((shot, index) => (
+                <button
+                  className={index === activeShotIndex ? "active" : ""}
+                  key={shot.id}
+                  type="button"
+                  onClick={() => {
+                    setActiveShotIndex(index);
+                  }}
+                >
+                  <span>{shot.position}</span>
+                  <b>{shot.subtitle}</b>
+                  <small>{Math.round(shot.start)}-{Math.round(shot.end)}s · {shot.assetStatus}</small>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeVersion && activeShot && (
+        <div className="copy-block">
+          <b>Seedance 提示参考</b>
+          <code>{activeShot.visualPrompt}</code>
+          <small>{activeShot.sound} · 道具：{activeShot.prop}</small>
+        </div>
+      )}
+
+      {!activeVersion && (
+        <p className="muted-note">
+          当前版本：{activeVersion?.selectedTitle || activeVersion?.name || "未选择版本"}。请选择剧本版本后生成真实视频。
+        </p>
+      )}
     </div>
   );
 }
