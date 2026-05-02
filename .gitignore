@@ -8,5 +8,8 @@ data/*.json
 data/*.tmp
 data/*.sqlite
 data/*.sqlite-*
+.e2e-data
+test-results
+playwright-report
 vite-dev*.log
 server*.log

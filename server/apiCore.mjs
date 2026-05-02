@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -24,6 +25,7 @@ import {
   readAiLogsFromDatabase,
   readAnalyticsSummaryFromDatabase,
   readLatestTrendSnapshotFromDatabase,
+  readNotificationOutboxEntryFromDatabase,
   readNotificationOutboxFromDatabase,
   readPublicProjectExport,
   readSession,
@@ -47,6 +49,7 @@ import { lastTrendUpdated, marketNotes, templateSignals, trendTags } from "../sr
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_AI_TIMEOUT_MS = 70_000;
+const DEFAULT_NOTIFICATION_TIMEOUT_MS = 10_000;
 const DEFAULT_RATE_LIMIT_WINDOW_MS = 60_000;
 const DEFAULT_RATE_LIMIT_MAX = 80;
 const rateBuckets = new Map();
@@ -248,6 +251,135 @@ function buildStorageMigrationPlan(env = {}) {
       "切流前冻结写入，完成增量校验后再开启多实例服务。",
     ],
   };
+}
+
+function getNotificationWebhookUrl(env = {}) {
+  const value = String(env.DJCYTOOLS_NOTIFICATION_WEBHOOK_URL || "").trim();
+  if (!value) return "";
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) ? url.toString() : "";
+  } catch {
+    return "";
+  }
+}
+
+function redactWebhookUrl(value = "") {
+  try {
+    const url = new URL(value);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return "";
+  }
+}
+
+function createWebhookHeaders(env, body, timestamp) {
+  const headers = {
+    "Content-Type": "application/json",
+    "X-DJCYTools-Event": "notification.delivery",
+    "X-DJCYTools-Timestamp": timestamp,
+  };
+  const secret = String(env.DJCYTOOLS_NOTIFICATION_WEBHOOK_SECRET || "").trim();
+  if (secret) {
+    const signature = crypto.createHmac("sha256", secret).update(`${timestamp}.${body}`).digest("hex");
+    headers["X-DJCYTools-Signature"] = `sha256=${signature}`;
+  }
+  return headers;
+}
+
+function summarizeResponseText(text = "") {
+  return String(text || "").replace(/\s+/g, " ").trim().slice(0, 500);
+}
+
+async function deliverNotificationWebhook(rootDir, env, session, notificationId) {
+  const webhookUrl = getNotificationWebhookUrl(env);
+  if (!webhookUrl) {
+    throw createHttpError(400, "未配置 DJCYTOOLS_NOTIFICATION_WEBHOOK_URL，无法自动投递通知。", "NOTIFICATION_WEBHOOK_NOT_CONFIGURED");
+  }
+
+  const notification = readNotificationOutboxEntryFromDatabase(rootDir, env, session, notificationId);
+  if (["sent", "expired"].includes(notification.status)) {
+    throw createHttpError(409, "该通知已发送或已失效，不能重复自动投递。", "NOTIFICATION_NOT_DELIVERABLE");
+  }
+
+  const timestamp = new Date().toISOString();
+  const payload = {
+    event: "djcytools.notification",
+    sentAt: timestamp,
+    team: {
+      id: session.team.id,
+      name: session.team.name,
+    },
+    actor: {
+      id: session.user.id,
+      email: session.user.email,
+      name: session.user.name,
+    },
+    notification: {
+      id: notification.id,
+      kind: notification.kind,
+      recipient: notification.recipient,
+      subject: notification.subject,
+      body: notification.body,
+      targetType: notification.targetType,
+      targetId: notification.targetId,
+      createdAt: notification.createdAt,
+    },
+  };
+  const body = JSON.stringify(payload);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Number(env.DJCYTOOLS_NOTIFICATION_TIMEOUT_MS || DEFAULT_NOTIFICATION_TIMEOUT_MS));
+
+  try {
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      signal: controller.signal,
+      headers: createWebhookHeaders(env, body, timestamp),
+      body,
+    });
+    const responseText = summarizeResponseText(await response.text().catch(() => ""));
+    clearTimeout(timeout);
+    const updated = updateNotificationDeliveryStatus(rootDir, env, session, notificationId, {
+      status: response.ok ? "sent" : "failed",
+      channel: "webhook",
+      delivery: {
+        ok: response.ok,
+        httpStatus: response.status,
+        webhook: redactWebhookUrl(webhookUrl),
+        response: responseText,
+      },
+    });
+    appendAudit(rootDir, env, session, response.ok ? "notification.webhook_delivered" : "notification.webhook_failed", {
+      targetType: "notification",
+      targetId: notificationId,
+      recipient: notification.recipient,
+      httpStatus: response.status,
+    });
+    return { ok: response.ok, notification: updated, httpStatus: response.status, response: responseText };
+  } catch (error) {
+    clearTimeout(timeout);
+    const isAbort = error?.name === "AbortError";
+    const updated = updateNotificationDeliveryStatus(rootDir, env, session, notificationId, {
+      status: "failed",
+      channel: "webhook",
+      delivery: {
+        ok: false,
+        webhook: redactWebhookUrl(webhookUrl),
+        error: isAbort ? "Webhook 请求超时" : error instanceof Error ? error.message : "Webhook 请求失败",
+      },
+    });
+    appendAudit(rootDir, env, session, "notification.webhook_failed", {
+      targetType: "notification",
+      targetId: notificationId,
+      recipient: notification.recipient,
+      error: isAbort ? "timeout" : error instanceof Error ? error.message : "unknown",
+    });
+    return {
+      ok: false,
+      notification: updated,
+      error: isAbort ? "Webhook 请求超时" : error instanceof Error ? error.message : "Webhook 请求失败",
+    };
+  }
 }
 
 function buildPublicOpenApiSpec(env = {}) {
@@ -892,7 +1024,18 @@ export async function handleApiRequest({ req, res, env, rootDir = process.cwd() 
 
   if (pathname === "/api/notifications/outbox" && req.method === "GET") {
     if (!ensureRole(res, session, "owner")) return true;
-    sendJson(res, 200, { notifications: readNotificationOutboxFromDatabase(rootDir, env, session) });
+    sendJson(res, 200, {
+      notifications: readNotificationOutboxFromDatabase(rootDir, env, session),
+      webhookConfigured: Boolean(getNotificationWebhookUrl(env)),
+    });
+    return true;
+  }
+
+  const notificationDeliverMatch = pathname.match(/^\/api\/notifications\/outbox\/([^/]+)\/deliver$/);
+  if (notificationDeliverMatch && req.method === "POST") {
+    if (!ensureRole(res, session, "owner")) return true;
+    const result = await deliverNotificationWebhook(rootDir, env, session, decodeURIComponent(notificationDeliverMatch[1]));
+    sendJson(res, 200, result);
     return true;
   }
 

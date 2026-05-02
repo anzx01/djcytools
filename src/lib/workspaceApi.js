@@ -188,6 +188,12 @@ export async function updateNotificationDelivery(notificationId, status) {
   });
 }
 
+export async function deliverNotificationWebhook(notificationId) {
+  return apiFetch(`/api/notifications/outbox/${encodeURIComponent(notificationId)}/deliver`, {
+    method: "POST",
+  });
+}
+
 export async function fetchTeamInvites() {
   return apiFetch("/api/team/invites");
 }

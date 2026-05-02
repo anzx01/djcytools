@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import http from "node:http";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { handleApiRequest } from "../server/apiCore.mjs";
@@ -43,12 +44,42 @@ function createRes() {
   };
 }
 
-async function request(rootDir, options) {
+async function request(rootDir, options, requestEnv = env) {
   const req = createReq(options);
   const res = createRes();
-  const handled = await handleApiRequest({ req, res, env, rootDir });
+  const handled = await handleApiRequest({ req, res, env: requestEnv, rootDir });
   assert.equal(handled, true);
   return res;
+}
+
+function createWebhookRecorder() {
+  const calls = [];
+  const server = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (chunk) => {
+      raw += chunk;
+    });
+    req.on("end", () => {
+      calls.push({
+        method: req.method,
+        url: req.url,
+        headers: req.headers,
+        body: raw,
+      });
+      res.statusCode = 204;
+      res.end();
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve({
+        calls,
+        url: `http://127.0.0.1:${address.port}/webhook`,
+        close: () => new Promise((done) => server.close(done)),
+      });
+    });
+  });
 }
 
 test("public API exposes health, OpenAPI and project exports behind a token", async () => {
@@ -166,6 +197,53 @@ test("owner can inspect and update the local notification outbox", async () => {
     assert.equal(JSON.parse(updated.body).notification.status, "sent");
   } finally {
     closeDatabase(rootDir);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("owner can deliver a notification through the configured webhook", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "djcytools-webhook-"));
+  const webhook = await createWebhookRecorder();
+  const webhookEnv = {
+    ...env,
+    DJCYTOOLS_NOTIFICATION_WEBHOOK_URL: webhook.url,
+    DJCYTOOLS_NOTIFICATION_WEBHOOK_SECRET: "test-secret",
+  };
+  try {
+    const session = createSession(rootDir, webhookEnv, env.DJCYTOOLS_ADMIN_EMAIL, env.DJCYTOOLS_ADMIN_PASSWORD);
+    const cookie = `djcytools_session=${encodeURIComponent(session.token)}`;
+    await request(rootDir, {
+      method: "POST",
+      url: "/api/team/invites",
+      headers: { cookie, "content-type": "application/json" },
+      body: { email: "webhook-writer@example.test", name: "Webhook Writer", role: "viewer" },
+    }, webhookEnv);
+
+    const list = await request(rootDir, {
+      url: "/api/notifications/outbox",
+      headers: { cookie },
+    }, webhookEnv);
+    const listBody = JSON.parse(list.body);
+    assert.equal(listBody.webhookConfigured, true);
+    const notification = listBody.notifications.find((item) => item.kind === "team_invite");
+    assert.ok(notification);
+
+    const delivered = await request(rootDir, {
+      method: "POST",
+      url: `/api/notifications/outbox/${encodeURIComponent(notification.id)}/deliver`,
+      headers: { cookie },
+    }, webhookEnv);
+    const deliveredBody = JSON.parse(delivered.body);
+    assert.equal(deliveredBody.ok, true);
+    assert.equal(deliveredBody.notification.status, "sent");
+    assert.equal(deliveredBody.notification.channel, "webhook");
+    assert.equal(webhook.calls.length, 1);
+    assert.equal(webhook.calls[0].method, "POST");
+    assert.match(webhook.calls[0].headers["x-djcytools-signature"], /^sha256=/);
+    assert.match(JSON.parse(webhook.calls[0].body).notification.body, /webhook-writer@example\.test/);
+  } finally {
+    closeDatabase(rootDir, webhookEnv);
+    await webhook.close();
     await rm(rootDir, { recursive: true, force: true });
   }
 });

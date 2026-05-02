@@ -18,6 +18,7 @@ import {
   RefreshCcw,
   Save,
   Search,
+  Send,
   ShieldAlert,
   Store,
   Trash2,
@@ -916,10 +917,12 @@ export function SecurityPanel({
   migrationPlan,
   onCreateInvite,
   onUpdateNotificationDelivery,
+  onDeliverNotificationWebhook,
   onRefreshSecurity,
 }) {
   const [inviteDraft, setInviteDraft] = useState({ email: "", name: "", role: "editor" });
   const notifications = notificationState?.notifications || [];
+  const webhookConfigured = Boolean(notificationState?.webhookConfigured);
 
   function submitInvite(event) {
     event.preventDefault();
@@ -998,7 +1001,9 @@ export function SecurityPanel({
       <div className="notification-outbox">
         <div className="panel-inline-head">
           <span className="timestamp">本地通知发件箱</span>
-          <span className="timestamp">{notifications.filter((item) => item.status === "queued").length} 条待发送</span>
+          <span className="timestamp">
+            {notifications.filter((item) => item.status === "queued").length} 条待发送 · {webhookConfigured ? "Webhook 已配置" : "本地投递"}
+          </span>
         </div>
         {notifications.slice(0, 6).map((notification) => (
           <article className="notification-item" key={notification.id}>
@@ -1015,6 +1020,16 @@ export function SecurityPanel({
             <pre className="notification-body">{notification.body}</pre>
             <div className="notification-actions">
               <small>{formatDate(notification.createdAt)}</small>
+              <button
+                className="mini-action strong"
+                type="button"
+                onClick={() => onDeliverNotificationWebhook(notification.id)}
+                disabled={!canManageTeam || !webhookConfigured || ["sent", "expired"].includes(notification.status)}
+                title={webhookConfigured ? "通过配置的 Webhook 自动投递" : "需要配置 DJCYTOOLS_NOTIFICATION_WEBHOOK_URL"}
+              >
+                <Send size={13} />
+                Webhook 发送
+              </button>
               <button
                 className="mini-action"
                 type="button"

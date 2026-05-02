@@ -108,8 +108,9 @@ function assertValidPassword(password) {
   }
 }
 
-function getDataPaths(rootDir) {
-  const dataDir = path.join(rootDir, "data");
+function getDataPaths(rootDir, env = {}) {
+  const configuredDataDir = String(env.DJCYTOOLS_DATA_DIR || "").trim();
+  const dataDir = configuredDataDir ? path.resolve(rootDir, configuredDataDir) : path.join(rootDir, "data");
   return {
     dataDir,
     databaseFile: path.join(dataDir, "djcytools.sqlite"),
@@ -703,7 +704,7 @@ function normalizeCampaignResult(result = {}, fallback = {}) {
 
 function migrateJsonIfNeeded(db, rootDir, env, bootstrap) {
   if (getMeta(db, "json_migrated_v1") === "true") return;
-  const paths = getDataPaths(rootDir);
+  const paths = getDataPaths(rootDir, env);
   const hasProjects = Number(db.prepare("SELECT COUNT(*) AS count FROM projects WHERE team_id = ?").get(bootstrap.teamId)?.count || 0) > 0;
   if (!hasProjects) {
     const seed = createSeedWorkspace();
@@ -769,9 +770,9 @@ function insertAiLog(db, teamId, userId, logItem) {
 }
 
 export function getDatabase(rootDir, env = {}) {
-  const key = path.resolve(rootDir);
+  const paths = getDataPaths(rootDir, env);
+  const key = paths.databaseFile;
   if (databaseHandles.has(key)) return databaseHandles.get(key);
-  const paths = getDataPaths(rootDir);
   mkdirSync(paths.dataDir, { recursive: true });
   const db = new DatabaseSync(paths.databaseFile);
   initSchema(db);
@@ -783,8 +784,8 @@ export function getDatabase(rootDir, env = {}) {
   return db;
 }
 
-export function closeDatabase(rootDir) {
-  const key = path.resolve(rootDir);
+export function closeDatabase(rootDir, env = {}) {
+  const key = getDataPaths(rootDir, env).databaseFile;
   const db = databaseHandles.get(key);
   if (db) {
     db.close();
@@ -1547,10 +1548,34 @@ export function readNotificationOutboxFromDatabase(rootDir, env, session) {
     .map(notificationPayload);
 }
 
-export function updateNotificationDeliveryStatus(rootDir, env, session, notificationId, { status } = {}) {
+function readNotificationRowForSession(db, session, notificationId) {
+  return db
+    .prepare(
+      `SELECT *
+       FROM notification_outbox
+       WHERE id = ?
+         AND (
+           team_id = ?
+           OR user_id IN (SELECT user_id FROM team_members WHERE team_id = ?)
+         )`,
+    )
+    .get(notificationId, session.team.id, session.team.id);
+}
+
+export function readNotificationOutboxEntryFromDatabase(rootDir, env, session, notificationId) {
+  const db = getDatabase(rootDir, env);
+  const id = String(notificationId || "").trim();
+  if (!id) throw createDatabaseError(400, "通知 ID 不能为空", "NOTIFICATION_ID_REQUIRED");
+  const row = readNotificationRowForSession(db, session, id);
+  if (!row) throw createDatabaseError(404, "通知不存在或不属于当前团队", "NOTIFICATION_NOT_FOUND");
+  return notificationPayload(row);
+}
+
+export function updateNotificationDeliveryStatus(rootDir, env, session, notificationId, { status, channel = "", delivery = null } = {}) {
   const db = getDatabase(rootDir, env);
   const id = String(notificationId || "").trim();
   const nextStatus = String(status || "").trim();
+  const nextChannel = String(channel || "").trim();
   if (!id) throw createDatabaseError(400, "通知 ID 不能为空", "NOTIFICATION_ID_REQUIRED");
   if (!["queued", "sent", "failed", "expired"].includes(nextStatus)) {
     throw createDatabaseError(400, "通知状态只能是 queued、sent、failed 或 expired", "INVALID_NOTIFICATION_STATUS");
@@ -1558,21 +1583,29 @@ export function updateNotificationDeliveryStatus(rootDir, env, session, notifica
 
   let notification;
   execTransaction(db, () => {
-    const row = db
-      .prepare(
-        `SELECT *
-         FROM notification_outbox
-         WHERE id = ?
-           AND (
-             team_id = ?
-             OR user_id IN (SELECT user_id FROM team_members WHERE team_id = ?)
-           )`,
-      )
-      .get(id, session.team.id, session.team.id);
+    const row = readNotificationRowForSession(db, session, id);
     if (!row) throw createDatabaseError(404, "通知不存在或不属于当前团队", "NOTIFICATION_NOT_FOUND");
     const timestamp = nowIso();
-    db.prepare("UPDATE notification_outbox SET status = ?, updated_at = ?, sent_at = ? WHERE id = ?").run(
+    const payload = parseJson(row.payload_json, {});
+    const nextPayload = delivery
+      ? {
+          ...payload,
+          deliveryMode: nextChannel || payload.deliveryMode || row.channel,
+          deliveryAttempts: [
+            {
+              at: timestamp,
+              channel: nextChannel || row.channel,
+              status: nextStatus,
+              ...delivery,
+            },
+            ...(Array.isArray(payload.deliveryAttempts) ? payload.deliveryAttempts : []),
+          ].slice(0, 10),
+        }
+      : payload;
+    db.prepare("UPDATE notification_outbox SET status = ?, channel = ?, payload_json = ?, updated_at = ?, sent_at = ? WHERE id = ?").run(
       nextStatus,
+      nextChannel || row.channel,
+      jsonStringify(nextPayload, {}),
       timestamp,
       nextStatus === "sent" ? timestamp : null,
       id,

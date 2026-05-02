@@ -2566,6 +2566,12 @@ input[type="range"] {
   background: rgba(180, 61, 47, 0.08);
 }
 
+.mini-action.strong {
+  color: var(--blue);
+  border-color: rgba(47, 95, 143, 0.24);
+  background: rgba(47, 95, 143, 0.08);
+}
+
 .security-panel,
 .account-security-panel,
 .compliance-panel,

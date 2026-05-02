@@ -63,6 +63,7 @@ import {
   createTeamInvite,
   createProjectOnServer,
   deleteProjectOnServer,
+  deliverNotificationWebhook,
   downloadPostgresMigrationSql,
   importTrendSnapshot,
   loadWorkspaceFromServer,
@@ -169,7 +170,7 @@ export default function App() {
   const [analyticsState, setAnalyticsState] = useState(emptyAnalyticsState);
   const [auditState, setAuditState] = useState({ logs: [] });
   const [inviteState, setInviteState] = useState({ invites: [], lastInvite: null });
-  const [notificationState, setNotificationState] = useState({ notifications: [] });
+  const [notificationState, setNotificationState] = useState({ notifications: [], webhookConfigured: false });
   const [templateInsights, setTemplateInsights] = useState([]);
   const [trendSummary, setTrendSummary] = useState(null);
   const [trendSnapshots, setTrendSnapshots] = useState([]);
@@ -308,7 +309,7 @@ export default function App() {
     if (!canManageTeam) {
       setAuditState({ logs: [] });
       setInviteState((current) => ({ ...current, invites: [] }));
-      setNotificationState({ notifications: [] });
+      setNotificationState({ notifications: [], webhookConfigured: false });
       setMigrationPlan(null);
       return;
     }
@@ -316,8 +317,8 @@ export default function App() {
       .then(setAuditState)
       .catch(() => setAuditState({ logs: [] }));
     fetchNotificationOutbox()
-      .then((data) => setNotificationState({ notifications: data.notifications || [] }))
-      .catch(() => setNotificationState({ notifications: [] }));
+      .then((data) => setNotificationState({ notifications: data.notifications || [], webhookConfigured: Boolean(data.webhookConfigured) }))
+      .catch(() => setNotificationState({ notifications: [], webhookConfigured: false }));
     fetchTeamInvites()
       .then((data) => setInviteState((current) => ({ ...current, invites: data.invites || [] })))
       .catch(() => setInviteState((current) => ({ ...current, invites: [] })));
@@ -777,6 +778,28 @@ export default function App() {
     } catch (error) {
       const message = error instanceof Error ? error.message : "通知状态更新失败";
       setActionError({ title: "通知状态更新失败", message, tone: "error" });
+    }
+  }
+
+  async function handleDeliverNotificationWebhook(notificationId) {
+    if (!canManageTeam) return;
+    try {
+      const data = await deliverNotificationWebhook(notificationId);
+      setNotificationState((current) => ({
+        ...current,
+        notifications: (current.notifications || []).map((item) => (item.id === notificationId ? data.notification : item)),
+      }));
+      setActionError({
+        title: data.ok ? "Webhook 已发送" : "Webhook 投递失败",
+        message: data.ok ? "通知已通过配置的企业 IM/Webhook 通道投递。" : data.error || `Webhook 返回 ${data.httpStatus || "失败"}`,
+        detail: data.ok ? "" : "通知已标记为失败，可检查 Webhook 地址、签名配置或目标服务日志后重试。",
+        tone: data.ok ? "warning" : "error",
+      });
+      refreshSecurityData();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Webhook 投递失败";
+      setActionError({ title: "Webhook 投递失败", message, tone: "error" });
+      refreshSecurityData();
     }
   }
 
@@ -1339,6 +1362,7 @@ export default function App() {
                 migrationPlan={migrationPlan}
                 onCreateInvite={handleCreateInvite}
                 onUpdateNotificationDelivery={handleUpdateNotificationDelivery}
+                onDeliverNotificationWebhook={handleDeliverNotificationWebhook}
                 onRefreshSecurity={refreshSecurityData}
               />
             </section>
