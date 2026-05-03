@@ -1,30 +1,21 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
-  BarChart3,
   BookOpenText,
   Check,
   ChevronRight,
   Download,
-  Gauge,
   GitCompare,
   Home,
-  KeyRound,
   LogIn,
   LogOut,
-  MonitorPlay,
   PenLine,
   Plus,
   Clapperboard,
   ScrollText,
-  ShieldAlert,
   ShieldCheck,
   Sparkles,
-  Store,
-  Target,
   Trash2,
-  TrendingUp,
-  Users,
   Wand2,
 } from "lucide-react";
 import { defaultBrief, markets, templates, templateTypes } from "./data/templates";
@@ -42,68 +33,34 @@ import {
   uid,
 } from "./lib/generator";
 import { loadWorkspace, normalizeWorkspace, saveWorkspace } from "./lib/storage";
-import { calculateCampaignMetrics } from "./lib/exporters";
 import { generateVersionWithDeepSeek, rewriteVersionWithDeepSeek } from "./lib/deepseekClient";
 import {
   fetchAiLogs,
   fetchAnalyticsSummary,
-  fetchAuditLogs,
   fetchAuthSession,
-  fetchHealth,
-  fetchNotificationOutbox,
-  fetchPublicApiTokens,
-  fetchStorageMigrationPlan,
-  fetchTeamInvites,
-  fetchTemplateInsights,
-  fetchTrendSnapshots,
-  fetchTrendSummary,
-  acceptInvite,
-  changePassword,
   confirmPasswordReset,
-  createPublicApiToken,
-  createTeamInvite,
   createProjectOnServer,
   deleteProjectOnServer,
-  deliverNotificationWebhook,
-  downloadPostgresMigrationSql,
-  importTrendSnapshot,
   loadWorkspaceFromServer,
   login,
   logout,
   requestPasswordReset,
   register,
-  removeTeamMember,
-  revokePublicApiToken,
   saveWorkspaceToServer,
   trackPageView,
-  updateNotificationDelivery,
-  updateTeamMember,
   updateProjectOnServer,
 } from "./lib/workspaceApi";
 import {
-  CampaignPanel,
-  AccountSecurityPanel,
-  ApiHandoffPanel,
-  CompliancePanel,
   DeliveryPanel,
   DraftReadinessPanel,
   ErrorNotice,
   InteractivePanel,
   Metric,
-  OpsPanel,
   PanelHeader,
   ProjectManagementPanel,
-  ScoreCard,
-  SecurityPanel,
   ScriptEditor,
-  StoryboardPanel,
-  TeamPanel,
   TemplateBriefPreview,
-  TemplateMarketplacePanel,
-  TemplateManager,
-  TrendPanel,
   VideoSamplePanel,
-  VersionPanel,
 } from "./components/workbench/WorkbenchPanels.jsx";
 import LandingPage from "./LandingPage.jsx";
 
@@ -123,6 +80,11 @@ const emptyAnalyticsState = {
   },
   recentEvents: [],
 };
+
+const workbenchModules = [
+  { id: "project", label: "项目", icon: BookOpenText },
+  { id: "video", label: "视频", icon: Clapperboard },
+];
 
 const unauthenticatedState = {
   status: "ready",
@@ -161,7 +123,7 @@ export default function App() {
   const [workspace, setWorkspace] = useState(() => loadWorkspace());
   const [draftBrief, setDraftBrief] = useState(defaultBrief);
   const [draftParams, setDraftParams] = useState(() => mergeParams(getTemplate(defaultBrief.templateId)));
-  const [compareVersionId, setCompareVersionId] = useState("");
+  const [activeWorkbenchTab, setActiveWorkbenchTab] = useState("project");
   const [commentText, setCommentText] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [isRewriting, setIsRewriting] = useState(false);
@@ -170,24 +132,13 @@ export default function App() {
   const [storageStatus, setStorageStatus] = useState("正在连接服务端工作区...");
   const [aiLogState, setAiLogState] = useState({ logs: [], totals: { count: 0, success: 0, tokens: 0, costUsd: 0 } });
   const [analyticsState, setAnalyticsState] = useState(emptyAnalyticsState);
-  const [auditState, setAuditState] = useState({ logs: [] });
-  const [inviteState, setInviteState] = useState({ invites: [], lastInvite: null });
-  const [notificationState, setNotificationState] = useState({ notifications: [], webhookConfigured: false });
-  const [templateInsights, setTemplateInsights] = useState([]);
-  const [trendSummary, setTrendSummary] = useState(null);
-  const [trendSnapshots, setTrendSnapshots] = useState([]);
-  const [migrationPlan, setMigrationPlan] = useState(null);
-  const [healthState, setHealthState] = useState(null);
-  const [apiTokenState, setApiTokenState] = useState({ tokens: [], lastToken: null, envTokenConfigured: false });
   const [authState, setAuthState] = useState({ ...unauthenticatedState, status: "checking" });
   const [loginError, setLoginError] = useState("");
   const serverReadyRef = useRef(false);
   const saveTimerRef = useRef(null);
-  const backupInputRef = useRef(null);
   const isAuthenticated = Boolean(authState.authenticated);
   const currentRole = authState.membership?.role || "viewer";
   const canEdit = currentRole === "owner" || currentRole === "editor";
-  const canManageTeam = currentRole === "owner";
 
   useEffect(() => {
     function syncRouteFromHash() {
@@ -260,12 +211,7 @@ export default function App() {
     });
     refreshAiLogs();
     refreshAnalytics();
-    refreshTemplateInsights();
-    refreshTrendSummary();
-    refreshSecurityData();
-    refreshHealth();
-    refreshApiTokens();
-  }, [isAuthenticated, canManageTeam]);
+  }, [isAuthenticated]);
 
   useEffect(() => {
     const page = showLanding ? "landing" : "workbench";
@@ -292,65 +238,6 @@ export default function App() {
       .catch(() => setAnalyticsState(emptyAnalyticsState));
   }
 
-  function refreshTemplateInsights() {
-    fetchTemplateInsights()
-      .then((data) => setTemplateInsights(data.insights || []))
-      .catch(() => setTemplateInsights([]));
-  }
-
-  function refreshTrendSummary() {
-    fetchTrendSummary()
-      .then(setTrendSummary)
-      .catch(() => setTrendSummary(null));
-    fetchTrendSnapshots()
-      .then((data) => setTrendSnapshots(data.snapshots || []))
-      .catch(() => setTrendSnapshots([]));
-  }
-
-  function refreshSecurityData() {
-    if (!canManageTeam) {
-      setAuditState({ logs: [] });
-      setInviteState((current) => ({ ...current, invites: [] }));
-      setNotificationState({ notifications: [], webhookConfigured: false });
-      setMigrationPlan(null);
-      return;
-    }
-    fetchAuditLogs()
-      .then(setAuditState)
-      .catch(() => setAuditState({ logs: [] }));
-    fetchNotificationOutbox()
-      .then((data) => setNotificationState({ notifications: data.notifications || [], webhookConfigured: Boolean(data.webhookConfigured) }))
-      .catch(() => setNotificationState({ notifications: [], webhookConfigured: false }));
-    fetchTeamInvites()
-      .then((data) => setInviteState((current) => ({ ...current, invites: data.invites || [] })))
-      .catch(() => setInviteState((current) => ({ ...current, invites: [] })));
-    fetchStorageMigrationPlan()
-      .then(setMigrationPlan)
-      .catch(() => setMigrationPlan(null));
-  }
-
-  function refreshHealth() {
-    fetchHealth()
-      .then(setHealthState)
-      .catch(() => setHealthState(null));
-  }
-
-  function refreshApiTokens() {
-    if (!canManageTeam) {
-      setApiTokenState({ tokens: [], lastToken: null, envTokenConfigured: false });
-      return;
-    }
-    fetchPublicApiTokens()
-      .then((data) =>
-        setApiTokenState((current) => ({
-          tokens: data.tokens || [],
-          lastToken: current.lastToken,
-          envTokenConfigured: Boolean(data.envTokenConfigured),
-        })),
-      )
-      .catch(() => setApiTokenState({ tokens: [], lastToken: null, envTokenConfigured: false }));
-  }
-
   async function handleLogin({ email, password }) {
     setLoginError("");
     try {
@@ -371,18 +258,6 @@ export default function App() {
       setActionError(null);
     } catch (error) {
       const message = error instanceof Error ? error.message : "注册失败";
-      setLoginError(message);
-    }
-  }
-
-  async function handleAcceptInvite({ token, password, name }) {
-    setLoginError("");
-    try {
-      const session = await acceptInvite({ token, password, name });
-      setAuthState({ status: "ready", ...session });
-      setActionError(null);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "接受邀请失败";
       setLoginError(message);
     }
   }
@@ -409,21 +284,6 @@ export default function App() {
     }
   }
 
-  async function handleChangePassword({ currentPassword, newPassword }) {
-    try {
-      await changePassword({ currentPassword, newPassword });
-      setActionError({
-        title: "密码已更新",
-        message: "当前会话已保留，其他设备上的会话已失效。",
-        tone: "warning",
-      });
-      refreshSecurityData();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "密码更新失败";
-      setActionError({ title: "密码更新失败", message, tone: "error" });
-    }
-  }
-
   async function handleLogout() {
     try {
       await logout();
@@ -432,14 +292,6 @@ export default function App() {
       setAuthState(unauthenticatedState);
       setStorageStatus("已退出登录");
       setAiLogState({ logs: [], totals: { count: 0, success: 0, tokens: 0, costUsd: 0 } });
-      setAuditState({ logs: [] });
-      setInviteState({ invites: [], lastInvite: null });
-      setTemplateInsights([]);
-      setTrendSummary(null);
-      setTrendSnapshots([]);
-      setMigrationPlan(null);
-      setHealthState(null);
-      setApiTokenState({ tokens: [], lastToken: null, envTokenConfigured: false });
     }
   }
 
@@ -452,11 +304,6 @@ export default function App() {
     if (!activeProject) return null;
     return activeProject.versions.find((version) => version.id === activeProject.activeVersionId) || activeProject.versions[0];
   }, [activeProject]);
-
-  const compareVersion = useMemo(() => {
-    if (!activeProject) return null;
-    return activeProject.versions.find((version) => version.id === compareVersionId) || activeProject.versions[1] || null;
-  }, [activeProject, compareVersionId]);
 
   const templateCatalog = useMemo(() => {
     const customTemplates = workspace.customTemplates || [];
@@ -532,7 +379,6 @@ export default function App() {
       activeProjectId: project.id,
       projects: [project, ...current.projects.filter((item) => item.id !== project.id)],
     }));
-    setCompareVersionId("");
 
     if (!serverReadyRef.current || !isAuthenticated || !canEdit) return;
     try {
@@ -580,7 +426,7 @@ export default function App() {
       project = createProjectFromVersion({
         brief: normalizedBrief,
         version,
-        notice: "已使用 DeepSeek 生成初版，可先检查前 3 集钩子、市场适配和合规风险。",
+        notice: "已使用 DeepSeek 生成初版，可先检查前 3 集钩子、市场适配和分镜节奏。",
       });
       setGenerationNotice("DeepSeek 生成完成。");
       setActionError(null);
@@ -600,7 +446,7 @@ export default function App() {
       setActionError({
         title: "DeepSeek 生成失败，已自动兜底",
         message,
-        detail: "当前项目已由本地生成器创建，可继续编辑、评分、导出；AI 调用日志会记录这次失败。",
+        detail: "当前项目已由本地生成器创建，可继续编辑、生成视频和导出；AI 调用日志会记录这次失败。",
         tone: "warning",
       });
     }
@@ -612,7 +458,6 @@ export default function App() {
 
   async function handleRewrite(instruction) {
     if (!activeProject || !activeVersion || isRewriting || !canEdit) return;
-    const previousVersionId = activeVersion.id;
     setIsRewriting(true);
     setGenerationNotice(`正在调用 DeepSeek 执行「${instruction}」...`);
 
@@ -633,7 +478,6 @@ export default function App() {
           ...project.comments,
         ],
       }));
-      setCompareVersionId(previousVersionId);
       setGenerationNotice(`DeepSeek 已完成「${instruction}」。`);
       setActionError(null);
     } catch (error) {
@@ -653,12 +497,11 @@ export default function App() {
           ],
         };
       });
-      setCompareVersionId(previousVersionId);
       setGenerationNotice("DeepSeek 改写失败，已用本地模拟结果兜底。");
       setActionError({
         title: "DeepSeek 改写失败，已自动兜底",
         message,
-        detail: "已生成本地改写版本，并保留上一版作为对照。",
+        detail: "已生成本地改写版本，可继续编辑或生成真实视频。",
         tone: "warning",
       });
     } finally {
@@ -725,116 +568,6 @@ export default function App() {
     }));
   }
 
-  function addCampaignResult(result) {
-    if (!activeProject || !activeVersion || !canEdit) return;
-    const metrics = calculateCampaignMetrics(result);
-    patchWorkspaceProject(activeProject.id, (project) => ({
-      ...project,
-      updatedAt: new Date().toISOString(),
-      campaignResults: [
-        {
-          id: uid("campaign"),
-          versionId: activeVersion.id,
-          versionName: activeVersion.name,
-          templateName: activeVersion.templateName,
-          createdAt: new Date().toISOString(),
-          ...result,
-          metrics,
-        },
-        ...(project.campaignResults || []),
-      ],
-    }));
-    refreshTemplateInsights();
-    refreshTrendSummary();
-  }
-
-  async function handleCreateInvite(invite) {
-    if (!canManageTeam) return;
-    try {
-      const data = await createTeamInvite(invite);
-      setInviteState((current) => ({
-        invites: [data.invite, ...(current.invites || [])],
-        lastInvite: data.invite,
-      }));
-      setActionError({
-        title: "邀请已生成",
-        message: `已为 ${data.invite.email} 生成邀请 Token。`,
-        detail: "通知正文已进入本地发件箱，可复制给成员后标记投递状态。",
-        tone: "warning",
-      });
-      refreshSecurityData();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "创建邀请失败";
-      setActionError({ title: "创建邀请失败", message, tone: "error" });
-    }
-  }
-
-  async function handleUpdateNotificationDelivery(notificationId, status) {
-    if (!canManageTeam) return;
-    try {
-      const data = await updateNotificationDelivery(notificationId, status);
-      setNotificationState((current) => ({
-        notifications: (current.notifications || []).map((item) => (item.id === notificationId ? data.notification : item)),
-      }));
-      refreshSecurityData();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "通知状态更新失败";
-      setActionError({ title: "通知状态更新失败", message, tone: "error" });
-    }
-  }
-
-  async function handleDeliverNotificationWebhook(notificationId) {
-    if (!canManageTeam) return;
-    try {
-      const data = await deliverNotificationWebhook(notificationId);
-      setNotificationState((current) => ({
-        ...current,
-        notifications: (current.notifications || []).map((item) => (item.id === notificationId ? data.notification : item)),
-      }));
-      setActionError({
-        title: data.ok ? "Webhook 已发送" : "Webhook 投递失败",
-        message: data.ok ? "通知已通过配置的企业 IM/Webhook 通道投递。" : data.error || `Webhook 返回 ${data.httpStatus || "失败"}`,
-        detail: data.ok ? "" : "通知已标记为失败，可检查 Webhook 地址、签名配置或目标服务日志后重试。",
-        tone: data.ok ? "warning" : "error",
-      });
-      refreshSecurityData();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Webhook 投递失败";
-      setActionError({ title: "Webhook 投递失败", message, tone: "error" });
-      refreshSecurityData();
-    }
-  }
-
-  async function handleUpdateTeamMember(memberId, patch) {
-    if (!canManageTeam) return;
-    try {
-      const nextWorkspace = await updateTeamMember(memberId, patch);
-      serverReadyRef.current = true;
-      setWorkspace(normalizeWorkspace(nextWorkspace));
-      setStorageStatus("团队成员权限已同步");
-      refreshSecurityData();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "成员更新失败";
-      setActionError({ title: "成员权限同步失败", message, tone: "error" });
-      loadWorkspaceFromServer().then((serverWorkspace) => setWorkspace(normalizeWorkspace(serverWorkspace))).catch(() => {});
-    }
-  }
-
-  async function handleRemoveTeamMember(memberId, member) {
-    if (!canManageTeam) return;
-    if (!window.confirm(`确认移除成员「${member?.name || "该成员"}」？`)) return;
-    try {
-      const nextWorkspace = await removeTeamMember(memberId);
-      serverReadyRef.current = true;
-      setWorkspace(normalizeWorkspace(nextWorkspace));
-      setStorageStatus("团队成员已移除");
-      refreshSecurityData();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "成员移除失败";
-      setActionError({ title: "成员移除失败", message, tone: "error" });
-    }
-  }
-
   function handleCreateInteractiveExperience({ mood, persona }) {
     if (!activeProject || !activeVersion || !canEdit) return;
     const experience = createInteractiveExperience({ project: activeProject, version: activeVersion, mood, persona });
@@ -854,86 +587,8 @@ export default function App() {
     }));
   }
 
-  async function handleDownloadPostgresExport() {
-    if (!canManageTeam) return;
-    try {
-      await downloadPostgresMigrationSql();
-      setActionError({
-        title: "PostgreSQL 迁移包已导出",
-        message: "SQL 文件包含当前团队的项目、版本、模板、投流、AI 日志和审计记录。",
-        tone: "warning",
-      });
-      refreshSecurityData();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "导出失败";
-      setActionError({ title: "PostgreSQL 迁移包导出失败", message, tone: "error" });
-    }
-  }
-
-  async function handleCreateApiToken(name) {
-    if (!canManageTeam) return;
-    try {
-      const data = await createPublicApiToken(name);
-      setApiTokenState((current) => ({
-        envTokenConfigured: current.envTokenConfigured,
-        tokens: [data.token, ...(current.tokens || [])],
-        lastToken: data.token,
-      }));
-      setActionError({
-        title: "团队 API Token 已生成",
-        message: "Token 只显示一次，请立即保存到第三方制作流程。",
-        detail: "公开接口会按该 Token 所属团队限制项目范围。",
-        tone: "warning",
-      });
-      refreshSecurityData();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Token 生成失败";
-      setActionError({ title: "Token 生成失败", message, tone: "error" });
-    }
-  }
-
-  async function handleRevokeApiToken(tokenId) {
-    if (!canManageTeam) return;
-    if (!window.confirm("确认撤销这个 API Token？外部系统将无法继续使用它。")) return;
-    try {
-      await revokePublicApiToken(tokenId);
-      setApiTokenState((current) => ({
-        ...current,
-        tokens: (current.tokens || []).map((token) =>
-          token.id === tokenId ? { ...token, revokedAt: new Date().toISOString() } : token,
-        ),
-        lastToken: current.lastToken?.id === tokenId ? null : current.lastToken,
-      }));
-      refreshApiTokens();
-      refreshSecurityData();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Token 撤销失败";
-      setActionError({ title: "Token 撤销失败", message, tone: "error" });
-    }
-  }
-
-  async function handleImportTrendSnapshot(rawValue) {
-    if (!canEdit) return;
-    try {
-      const parsed = JSON.parse(rawValue);
-      const data = await importTrendSnapshot(parsed);
-      setActionError({
-        title: "趋势快照已导入",
-        message: `${data.snapshot.source} 已成为团队趋势参考。`,
-        detail: "数据洞察会优先使用最新导入快照，并叠加团队投流回流信号。",
-        tone: "warning",
-      });
-      refreshTrendSummary();
-      refreshSecurityData();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "导入失败";
-      setActionError({ title: "趋势快照导入失败", message, detail: "请确认 JSON 包含 source、tags、templateSignals 或 marketNotes。", tone: "error" });
-    }
-  }
-
   function selectProject(projectId) {
     setWorkspace((current) => ({ ...current, activeProjectId: projectId }));
-    setCompareVersionId("");
   }
 
   function deleteProject(projectId) {
@@ -957,7 +612,6 @@ export default function App() {
         activeProjectId: current.activeProjectId === projectId ? remaining[0]?.id || "" : current.activeProjectId,
       };
     });
-    setCompareVersionId("");
 
     if (!serverReadyRef.current || !isAuthenticated) return;
     deleteProjectOnServer(projectId)
@@ -979,51 +633,15 @@ export default function App() {
     deleteProject(activeProject.id);
   }
 
-  function exportWorkspaceBackup() {
-    const blob = new Blob([JSON.stringify(workspace, null, 2)], { type: "application/json;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `djcytools-workspace-${new Date().toISOString().slice(0, 10)}.json`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-  }
-
-  function importWorkspaceBackup(file) {
-    if (!file || !canEdit) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const parsed = JSON.parse(String(reader.result || ""));
-        if (!Array.isArray(parsed.projects) || !parsed.team) throw new Error("备份文件结构不正确");
-        setWorkspace(normalizeWorkspace(parsed));
-        setStorageStatus("已从备份恢复，正在同步服务端");
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "未知错误";
-        setStorageStatus(`备份恢复失败：${message}`);
-        setActionError({
-          title: "备份恢复失败",
-          message,
-          detail: "请确认导入的是 DJCYTools 工作区 JSON 文件。",
-          tone: "error",
-        });
-      }
-    };
-    reader.readAsText(file, "utf-8");
-  }
-
   const stats = {
     projects: workspace.projects.length,
     versions: workspace.projects.reduce((sum, project) => sum + project.versions.length, 0),
     exports: workspace.projects.reduce((sum, project) => sum + project.exports.length, 0),
-    campaigns: workspace.projects.reduce((sum, project) => sum + (project.campaignResults?.length || 0), 0),
-    avgScore: Math.round(
-      workspace.projects.reduce((sum, project) => sum + (project.versions[0]?.score?.total || 0), 0) /
-        Math.max(workspace.projects.length, 1),
-    ),
   };
+  const aiTotals = aiLogState.totals || { count: 0, success: 0, tokens: 0, costUsd: 0 };
+  const workbenchVisits = analyticsState?.pages?.workbench || { pageViews: 0, uniqueVisitors: 0, lastVisitedAt: null };
+  const recentVisitAt = analyticsState?.recentEvents?.[0]?.createdAt || workbenchVisits.lastVisitedAt;
+  const recentVisitLabel = recentVisitAt ? formatDate(recentVisitAt) : "暂无";
 
   function launchWorkbench() {
     window.location.hash = "workbench";
@@ -1051,7 +669,6 @@ export default function App() {
         error={loginError}
         onLogin={handleLogin}
         onRegister={handleRegister}
-        onAcceptInvite={handleAcceptInvite}
         onRequestPasswordReset={handleRequestPasswordReset}
         onConfirmPasswordReset={handleConfirmPasswordReset}
         onBack={openLanding}
@@ -1075,9 +692,7 @@ export default function App() {
         <div className="metric-stack">
           <Metric icon={BookOpenText} label="项目" value={stats.projects} />
           <Metric icon={GitCompare} label="版本" value={stats.versions} />
-          <Metric icon={Gauge} label="均分" value={stats.avgScore} />
           <Metric icon={Download} label="导出" value={stats.exports} />
-          <Metric icon={TrendingUp} label="投流" value={stats.campaigns} />
         </div>
 
         <div className="rail-section">
@@ -1109,43 +724,57 @@ export default function App() {
       </aside>
 
       <main className="workbench" id="workbench">
-        <header className="top-bar">
-          <div>
-            <p className="eyebrow">PROJECT WORKBENCH</p>
-            <h2>{activeProject?.name || "新项目"}</h2>
-          </div>
-          <div className="top-actions">
-            <span className="user-pill">
-              <ShieldCheck size={14} />
-              {authState.user?.name || "已登录"}
-              <small>{authState.membership?.roleLabel || "查看者"}</small>
-            </span>
-            {["草稿", "评审中", "已定稿", "已导出"].map((status) => (
-              <button
-                key={status}
-                type="button"
-                className={`segmented ${activeProject?.status === status ? "selected" : ""}`}
-                onClick={() => handleProjectStatus(status)}
-                disabled={!canEdit}
-              >
-                {activeProject?.status === status && <Check size={14} />}
-                {status}
+        <div className="workbench-sticky-head">
+          <header className="top-bar">
+            <div>
+              <p className="eyebrow">PROJECT WORKBENCH</p>
+              <h2>{activeProject?.name || "新项目"}</h2>
+            </div>
+            <div className="top-actions">
+              <span className="user-pill">
+                <ShieldCheck size={14} />
+                {authState.user?.name || "已登录"}
+                <small>{authState.membership?.roleLabel || "查看者"}</small>
+              </span>
+              {["草稿", "评审中", "已定稿", "已导出"].map((status) => (
+                <button
+                  key={status}
+                  type="button"
+                  className={`segmented ${activeProject?.status === status ? "selected" : ""}`}
+                  onClick={() => handleProjectStatus(status)}
+                  disabled={!canEdit}
+                >
+                  {activeProject?.status === status && <Check size={14} />}
+                  {status}
+                </button>
+              ))}
+              <button className="segmented danger" type="button" onClick={deleteActiveProject} disabled={!canEdit || !activeProject || workspace.projects.length <= 1}>
+                <Trash2 size={14} />
+                删除项目
               </button>
-            ))}
-            <button className="segmented danger" type="button" onClick={deleteActiveProject} disabled={!canEdit || !activeProject || workspace.projects.length <= 1}>
-              <Trash2 size={14} />
-              删除项目
-            </button>
-            <button className="segmented quiet" type="button" onClick={openLanding}>
-              <Home size={14} />
-              落地页
-            </button>
-            <button className="segmented quiet" type="button" onClick={handleLogout}>
-              <LogOut size={14} />
-              退出
-            </button>
-          </div>
-        </header>
+              <button className="segmented quiet" type="button" onClick={openLanding}>
+                <Home size={14} />
+                落地页
+              </button>
+              <button className="segmented quiet" type="button" onClick={handleLogout}>
+                <LogOut size={14} />
+                退出
+              </button>
+            </div>
+          </header>
+
+          <section className="workbench-status-strip" aria-label="运行状态">
+            <div className="status-strip-main">
+              <Activity size={15} />
+              <strong>{storageStatus}</strong>
+            </div>
+            <span>AI {aiTotals.count} 次 / 成功 {aiTotals.success} 次</span>
+            <span>Token {aiTotals.tokens}</span>
+            <span>估算 ${aiTotals.costUsd}</span>
+            <span>工作台 {workbenchVisits.pageViews} 次</span>
+            <span>最近 {recentVisitLabel}</span>
+          </section>
+        </div>
 
         {actionError && <ErrorNotice error={actionError} onClose={() => setActionError(null)} />}
 
@@ -1263,185 +892,91 @@ export default function App() {
           </section>
 
           <aside className="right-stack">
-            <section className="panel">
-              <PanelHeader icon={BookOpenText} eyebrow="PROJECTS" title="项目管理" />
-              <ProjectManagementPanel
-                projects={workspace.projects}
-                activeProjectId={activeProject?.id || workspace.activeProjectId}
-                canEdit={canEdit}
-                isGenerating={isGenerating}
-                onSelectProject={selectProject}
-                onCreateDraftProject={handleCreateDraftProject}
-                onGenerateProject={handleCreateProject}
-                onUpdateProject={updateProjectDetails}
-                onDeleteProject={deleteProject}
-              />
-            </section>
+            <nav className="workbench-tabs" aria-label="工作台模块" role="tablist">
+              {workbenchModules.map(({ id, label, icon: Icon }) => (
+                <button
+                  aria-controls={`workbench-panel-${id}`}
+                  aria-selected={activeWorkbenchTab === id}
+                  className={`workbench-tab ${activeWorkbenchTab === id ? "active" : ""}`}
+                  id={`workbench-tab-${id}`}
+                  key={id}
+                  onClick={() => setActiveWorkbenchTab(id)}
+                  role="tab"
+                  type="button"
+                >
+                  <Icon size={15} />
+                  <span>{label}</span>
+                </button>
+              ))}
+            </nav>
 
-            <section className="panel score-panel">
-              <PanelHeader icon={Gauge} eyebrow="QUALITY" title="AI 评分" />
-              {activeVersion && <ScoreCard version={activeVersion} onRewrite={handleRewrite} isRewriting={isRewriting || !canEdit} />}
-            </section>
-
-            <section className="panel">
-              <PanelHeader icon={Activity} eyebrow="VERSIONS" title="版本实验" />
-              {activeProject && activeVersion && (
-                <VersionPanel
-                  project={activeProject}
-                  activeVersion={activeVersion}
-                  compareVersion={compareVersion}
-                  compareVersionId={compareVersionId}
-                  setCompareVersionId={setCompareVersionId}
-                  setWorkspace={setWorkspace}
-                />
-              )}
-            </section>
-
-            <section className="panel">
-              <PanelHeader icon={BarChart3} eyebrow="TRENDS" title="数据洞察" />
-              <TrendPanel
-                setDraftBrief={setDraftBrief}
-                trendSummary={trendSummary}
-                trendSnapshots={trendSnapshots}
-                canImportTrends={canEdit}
-                onRefreshTrends={refreshTrendSummary}
-                onImportTrendSnapshot={handleImportTrendSnapshot}
-              />
-            </section>
-
-            <section className="panel">
-              <PanelHeader icon={ShieldAlert} eyebrow="REVIEW" title="合规与相似度" />
-              {activeVersion && <CompliancePanel version={activeVersion} />}
-            </section>
-
-            <section className="panel">
-              <PanelHeader icon={MonitorPlay} eyebrow="STORYBOARD" title="分镜建议" />
-              {activeVersion && <StoryboardPanel version={activeVersion} />}
-            </section>
-
-            <section className="panel">
-              <PanelHeader icon={ScrollText} eyebrow="TEMPLATES" title="模板库管理" />
-              <TemplateManager
-                workspace={workspace}
-                setWorkspace={setWorkspace}
-                templateCatalog={templateCatalog}
-                typeGroups={typeGroups}
-                draftBrief={draftBrief}
-                setDraftBrief={setDraftBrief}
-                setDraftParams={setDraftParams}
-              />
-            </section>
-
-            <section className="panel">
-              <PanelHeader icon={Store} eyebrow="MARKETPLACE" title="模板市场" />
-              <TemplateMarketplacePanel
-                workspace={workspace}
-                setWorkspace={setWorkspace}
-                templateInsights={templateInsights}
-                setDraftBrief={setDraftBrief}
-                setDraftParams={setDraftParams}
-              />
-            </section>
-
-            <section className="panel">
-              <PanelHeader icon={Users} eyebrow="TEAM" title="团队权限" />
-              <TeamPanel
-                workspace={workspace}
-                setWorkspace={setWorkspace}
-                canManageTeam={canManageTeam}
-                onUpdateMember={handleUpdateTeamMember}
-                onRemoveMember={handleRemoveTeamMember}
-              />
-            </section>
-
-            <section className="panel">
-              <PanelHeader icon={ShieldCheck} eyebrow="SECURITY" title="邀请与审计" />
-              <SecurityPanel
-                canManageTeam={canManageTeam}
-                inviteState={inviteState}
-                notificationState={notificationState}
-                auditState={auditState}
-                migrationPlan={migrationPlan}
-                onCreateInvite={handleCreateInvite}
-                onUpdateNotificationDelivery={handleUpdateNotificationDelivery}
-                onDeliverNotificationWebhook={handleDeliverNotificationWebhook}
-                onRefreshSecurity={refreshSecurityData}
-              />
-            </section>
-
-            <section className="panel">
-              <PanelHeader icon={KeyRound} eyebrow="ACCOUNT" title="账号安全" />
-              <AccountSecurityPanel user={authState.user} onChangePassword={handleChangePassword} />
-            </section>
-
-            <section className="panel">
-              <PanelHeader icon={Target} eyebrow="API" title="交付接口" />
-              <ApiHandoffPanel
-                activeProject={activeProject}
-                healthState={healthState}
-                migrationPlan={migrationPlan}
-                apiTokenState={apiTokenState}
-                canManageTokens={canManageTeam}
-                onCreateApiToken={handleCreateApiToken}
-                onRevokeApiToken={handleRevokeApiToken}
-                onDownloadPostgresExport={handleDownloadPostgresExport}
-              />
-            </section>
-
-            <section className="panel">
-              <PanelHeader icon={Wand2} eyebrow="INTERACTIVE" title="互动短剧" />
-              {activeProject && activeVersion && (
-                <InteractivePanel
-                  project={activeProject}
-                  activeVersion={activeVersion}
-                  onCreateInteractiveExperience={handleCreateInteractiveExperience}
-                />
-              )}
-            </section>
-
-            <section className="panel">
-              <PanelHeader icon={Clapperboard} eyebrow="SEEDANCE" title="真实视频" />
-              {activeProject && activeVersion && (
-                <VideoSamplePanel
-                  project={activeProject}
-                  activeVersion={activeVersion}
+            <div
+              aria-labelledby="workbench-tab-project"
+              className="workbench-tab-panel"
+              hidden={activeWorkbenchTab !== "project"}
+              id="workbench-panel-project"
+              role="tabpanel"
+            >
+              <section className="panel">
+                <PanelHeader icon={BookOpenText} eyebrow="PROJECTS" title="项目管理" />
+                <ProjectManagementPanel
+                  projects={workspace.projects}
+                  activeProjectId={activeProject?.id || workspace.activeProjectId}
                   canEdit={canEdit}
+                  isGenerating={isGenerating}
+                  onSelectProject={selectProject}
+                  onCreateDraftProject={handleCreateDraftProject}
+                  onGenerateProject={handleCreateProject}
+                  onUpdateProject={updateProjectDetails}
+                  onDeleteProject={deleteProject}
                 />
-              )}
-            </section>
+              </section>
 
-            <section className="panel">
-              <PanelHeader icon={Download} eyebrow="DELIVERY" title="导出与协作" />
-              {activeProject && activeVersion && (
-                <DeliveryPanel
-                  project={activeProject}
-                  version={activeVersion}
-                  commentText={commentText}
-                  setCommentText={setCommentText}
-                  addComment={addComment}
-                  recordExport={recordExport}
-                />
-              )}
-            </section>
+            </div>
 
-            <section className="panel">
-              <PanelHeader icon={TrendingUp} eyebrow="CAMPAIGN" title="投流回流" />
-              {activeProject && activeVersion && (
-                <CampaignPanel project={activeProject} activeVersion={activeVersion} onAddResult={addCampaignResult} />
-              )}
-            </section>
+            <div
+              aria-labelledby="workbench-tab-video"
+              className="workbench-tab-panel"
+              hidden={activeWorkbenchTab !== "video"}
+              id="workbench-panel-video"
+              role="tabpanel"
+            >
+              <section className="panel">
+                <PanelHeader icon={Clapperboard} eyebrow="SEEDANCE" title="真实视频" />
+                {activeProject && activeVersion && (
+                  <VideoSamplePanel
+                    project={activeProject}
+                    activeVersion={activeVersion}
+                    canEdit={canEdit}
+                  />
+                )}
+              </section>
 
-            <section className="panel">
-              <PanelHeader icon={Target} eyebrow="OPS" title="运行状态" />
-              <OpsPanel
-                storageStatus={storageStatus}
-                aiLogState={aiLogState}
-                analyticsState={analyticsState}
-                exportWorkspaceBackup={exportWorkspaceBackup}
-                importWorkspaceBackup={importWorkspaceBackup}
-                backupInputRef={backupInputRef}
-              />
-            </section>
+              <section className="panel">
+                <PanelHeader icon={Wand2} eyebrow="INTERACTIVE" title="互动短剧" />
+                {activeProject && activeVersion && (
+                  <InteractivePanel
+                    project={activeProject}
+                    activeVersion={activeVersion}
+                    onCreateInteractiveExperience={handleCreateInteractiveExperience}
+                  />
+                )}
+              </section>
+
+              <section className="panel">
+                <PanelHeader icon={Download} eyebrow="DELIVERY" title="导出与协作" />
+                {activeProject && activeVersion && (
+                  <DeliveryPanel
+                    project={activeProject}
+                    version={activeVersion}
+                    commentText={commentText}
+                    setCommentText={setCommentText}
+                    addComment={addComment}
+                    recordExport={recordExport}
+                  />
+                )}
+              </section>
+            </div>
           </aside>
         </div>
       </main>
@@ -1463,17 +998,14 @@ function AuthLoading() {
   );
 }
 
-function LoginScreen({ error, onLogin, onRegister, onAcceptInvite, onRequestPasswordReset, onConfirmPasswordReset, onBack }) {
+function LoginScreen({ error, onLogin, onRegister, onRequestPasswordReset, onConfirmPasswordReset, onBack }) {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("admin@djcytools.local");
   const [name, setName] = useState("");
-  const [teamName, setTeamName] = useState("");
   const [password, setPassword] = useState("");
-  const [inviteToken, setInviteToken] = useState("");
   const [resetToken, setResetToken] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const isRegister = mode === "register";
-  const isInvite = mode === "invite";
   const isReset = mode === "reset";
 
   async function submit(event) {
@@ -1481,14 +1013,12 @@ function LoginScreen({ error, onLogin, onRegister, onAcceptInvite, onRequestPass
     if (submitting) return;
     setSubmitting(true);
     try {
-      if (isInvite) {
-        await onAcceptInvite({ token: inviteToken, password, name });
-      } else if (isReset && resetToken.trim()) {
+      if (isReset && resetToken.trim()) {
         await onConfirmPasswordReset({ token: resetToken, password });
       } else if (isReset) {
         await onRequestPasswordReset(email);
       } else if (isRegister) {
-        await onRegister({ email, password, name, teamName });
+        await onRegister({ email, password, name });
       } else {
         await onLogin({ email, password });
       }
@@ -1500,7 +1030,6 @@ function LoginScreen({ error, onLogin, onRegister, onAcceptInvite, onRequestPass
   function switchMode(nextMode) {
     setMode(nextMode);
     if (nextMode === "register" && email === "admin@djcytools.local") setEmail("");
-    if (nextMode === "invite") setEmail("");
   }
 
   return (
@@ -1509,8 +1038,8 @@ function LoginScreen({ error, onLogin, onRegister, onAcceptInvite, onRequestPass
         <div className="brand-mark">
           <ScrollText size={22} />
         </div>
-        <p className="eyebrow">TEAM WORKSPACE</p>
-        <h1>{isInvite ? "接受团队邀请" : isReset ? "重置账号密码" : isRegister ? "注册短剧叙事工厂" : "登录短剧叙事工厂"}</h1>
+        <p className="eyebrow">SOLO STUDIO</p>
+        <h1>{isReset ? "重置账号密码" : isRegister ? "注册短剧叙事工厂" : "登录短剧叙事工厂"}</h1>
         <div className="auth-tabs" role="tablist" aria-label="账号入口">
           <button className={mode === "login" ? "selected" : ""} type="button" onClick={() => switchMode("login")}>
             登录
@@ -1518,35 +1047,18 @@ function LoginScreen({ error, onLogin, onRegister, onAcceptInvite, onRequestPass
           <button className={isRegister ? "selected" : ""} type="button" onClick={() => switchMode("register")}>
             邮箱注册
           </button>
-          <button className={isInvite ? "selected" : ""} type="button" onClick={() => switchMode("invite")}>
-            接受邀请
-          </button>
           <button className={isReset ? "selected" : ""} type="button" onClick={() => switchMode("reset")}>
             重置密码
           </button>
         </div>
-        {!isInvite && (
-          <label>
-            邮箱
-            <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" />
-          </label>
-        )}
-        {(isRegister || isInvite) && (
+        <label>
+          邮箱
+          <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" />
+        </label>
+        {isRegister && (
           <label>
             姓名
             <input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" />
-          </label>
-        )}
-        {isRegister && (
-          <label>
-            团队名
-            <input value={teamName} onChange={(event) => setTeamName(event.target.value)} autoComplete="organization" />
-          </label>
-        )}
-        {isInvite && (
-          <label>
-            邀请 Token
-            <textarea rows={3} value={inviteToken} onChange={(event) => setInviteToken(event.target.value)} />
           </label>
         )}
         {isReset && (
@@ -1562,22 +1074,19 @@ function LoginScreen({ error, onLogin, onRegister, onAcceptInvite, onRequestPass
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              autoComplete={isRegister || isInvite || isReset ? "new-password" : "current-password"}
-              minLength={isRegister || isInvite || isReset ? 8 : undefined}
+              autoComplete={isRegister || isReset ? "new-password" : "current-password"}
+              minLength={isRegister || isReset ? 8 : undefined}
             />
           </label>
         )}
-        {isRegister && <p className="muted-note">注册后会自动创建个人团队，并以所有者身份登录。</p>}
-        {isInvite && <p className="muted-note">团队所有者生成邀请 Token 后，成员可在这里设置密码并加入团队。</p>}
-        {isReset && <p className="muted-note">本地 MVP 会直接返回重置 Token，并写入团队所有者可见的通知发件箱。</p>}
+        {isRegister && <p className="muted-note">注册后直接进入个人短视频工作台。</p>}
+        {isReset && <p className="muted-note">本地 MVP 会直接返回重置 Token。</p>}
         {error && <p className="auth-error">{error}</p>}
         <button className="primary-action" type="submit" disabled={submitting}>
           <LogIn size={18} />
           {submitting
             ? "处理中..."
-            : isInvite
-              ? "接受邀请并进入"
-              : isReset
+            : isReset
                 ? resetToken.trim()
                   ? "确认重置密码"
                   : "申请重置 Token"

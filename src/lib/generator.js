@@ -189,17 +189,13 @@ export function scoreScript(version) {
   const characterScore = clamp(76 + (version.characters?.length || 0) * 3, 0, 100);
   const localizationScore = clamp(82 - (params.humiliation > 88 ? 6 : 0), 0, 100);
   const productionScore = clamp(Math.round((hookScore + reversalScore + params.conflict) / 3), 0, 100);
-  const complianceScore = version.complianceReport?.riskScore ?? clamp(91 - (params.humiliation > 85 ? 5 : 0) - (params.conflict > 90 ? 4 : 0), 0, 100);
-  const similarityScore = clamp(100 - Math.round((version.similarityReport?.maxSimilarity || 0) * 100), 0, 100);
   const total = Math.round(
-    hookScore * 0.2 +
-      emotionScore * 0.16 +
-      reversalScore * 0.16 +
-      characterScore * 0.12 +
-      localizationScore * 0.12 +
-      productionScore * 0.14 +
-      complianceScore * 0.07 +
-      similarityScore * 0.03,
+    hookScore * 0.22 +
+      emotionScore * 0.18 +
+      reversalScore * 0.18 +
+      characterScore * 0.13 +
+      localizationScore * 0.13 +
+      productionScore * 0.16,
   );
 
   return {
@@ -211,8 +207,6 @@ export function scoreScript(version) {
       { name: "人设清晰", score: characterScore, note: "核心人物关系已成型，拍摄前可继续补动机。" },
       { name: "本地化", score: localizationScore, note: version.marketRisk },
       { name: "投流可剪辑", score: productionScore, note: "可拆出开场羞辱、身份揭露和反击三类素材。" },
-      { name: "合规风险", score: complianceScore, note: version.complianceReport?.level || (complianceScore > 86 ? "当前未发现明显高风险设定。" : "建议降低暴力、歧视或极端羞辱表达。") },
-      { name: "相似度", score: similarityScore, note: version.similarityReport?.level || "与当前项目版本保持区分。" },
     ],
     suggestions: [
       "第 1 集 20 秒内加入可视化证据，例如协议、录音或公开名单。",

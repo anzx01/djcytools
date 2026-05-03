@@ -77,11 +77,6 @@ export function buildProjectText(project, version) {
       ...(board.shots || []).map((shot) => `${shot.time}｜画面：${shot.frame}｜镜头：${shot.camera}｜声音：${shot.sound}｜道具：${shot.prop}`),
       "",
     ])),
-    "合规与相似度",
-    `合规：${version.complianceReport?.level || "未检测"}｜风险分 ${version.complianceReport?.riskScore ?? "-"}`,
-    `相似度：${version.similarityReport?.level || "未检测"}｜最高 ${(version.similarityReport?.maxSimilarity || 0) * 100}%`,
-    ...((version.complianceReport?.suggestions || []).map((item) => `建议：${item}`)),
-    "",
     "互动短剧体验",
     ...((project.interactiveExperiences || []).length
       ? project.interactiveExperiences.slice(0, 3).flatMap((experience) => [

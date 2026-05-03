@@ -57,9 +57,10 @@ test("scoreScript returns all production dimensions", () => {
   const project = createProject({ brief: defaultBrief, params: templates[0].defaultParams });
   const score = scoreScript(project.versions[0]);
 
-  assert.equal(score.dimensions.length, 8);
+  assert.equal(score.dimensions.length, 6);
   assert.ok(score.dimensions.some((item) => item.name === "投流可剪辑"));
-  assert.ok(score.dimensions.some((item) => item.name === "相似度"));
+  assert.equal(score.dimensions.some((item) => item.name === "相似度"), false);
+  assert.equal(score.dimensions.some((item) => item.name === "合规风险"), false);
 });
 
 test("production readiness adds storyboard, compliance and similarity signals", () => {

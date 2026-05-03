@@ -1,14 +1,11 @@
 import {
   ArrowRight,
-  BadgeCheck,
   BarChart3,
   CheckCircle2,
   ChevronDown,
   Clapperboard,
   Database,
   FileText,
-  Gauge,
-  GitCompare,
   HelpCircle,
   Layers3,
   LockKeyhole,
@@ -24,24 +21,11 @@ import {
   Users2,
   Wand2,
 } from "lucide-react";
+import { useEffect, useState } from "react";
 import workbenchPreview from "../image/README/1777172899013.png";
 import { templates, templateTypes } from "./data/templates.js";
 
-// 设计方向：短剧战争室 + 编辑部工业感，服务 AI 短剧剧本生成器、短剧出海模板、DeepSeek 剧本生成和 Doubao 视频样片等核心关键词。
-const heroMetrics = [
-  { value: String(templates.length), label: "热门模板" },
-  { value: String(templateTypes.length), label: "类型分组" },
-  { value: "90s", label: "首版目标" },
-  { value: "服务端", label: "密钥代理" },
-];
-
-const heroProof = [
-  "DeepSeek 中文生成",
-  "模板按热度排序",
-  "版本与日志可追溯",
-  "TXT / PDF / DOC / JSON 导出",
-];
-
+// 设计方向：短剧战争室 + 编辑部工业感，服务 AI 短剧剧本生成器、短剧出海模板、DeepSeek 剧本生成和 Seedance 真实视频等核心关键词。
 const workflow = [
   {
     icon: Sparkles,
@@ -54,44 +38,44 @@ const workflow = [
     text: "输出剧名、人设、大纲、前 3 集脚本、投流开场和对白样例。",
   },
   {
-    icon: GitCompare,
-    title: "版本实验改写",
-    text: "基于当前版本定向提高冲突、强化投流钩子或做本地化表达。",
+    icon: TimerReset,
+    title: "定向改写",
+    text: "基于当前剧本提高冲突、强化投流钩子或做本地化表达。",
   },
   {
     icon: BarChart3,
-    title: "沉淀团队资产",
-    text: "保存项目、版本、团队评论、导出记录和 AI 调用成本。",
+    title: "沉淀个人资产",
+    text: "保存项目、版本、创作备注、导出记录和 AI 调用成本。",
   },
 ];
 
 const productionSignals = [
   { label: "Brief 输入", value: "情绪、市场、模板、钩子密度" },
   { label: "结构输出", value: "人设、大纲、前三集、核心对白" },
-  { label: "投流评分", value: "钩子、情绪、反转、本地化" },
-  { label: "团队留痕", value: "版本、评论、导出、AI 成本" },
+  { label: "成片准备", value: "分镜、提示词、真实视频" },
+  { label: "创作留痕", value: "版本、备注、导出、AI 成本" },
 ];
 
 const benefits = [
   {
     icon: Layers3,
     title: "模板先行，不从空白页硬写",
-    text: "60 个热门模板覆盖豪门、复仇、重生、狼人、职场、古装等题材，立项时能快速对齐叙事套路。",
+    text: "120 个热门模板覆盖豪门、复仇、重生、狼人、职场、古装等题材，立项时能快速对齐叙事套路。",
   },
   {
     icon: LockKeyhole,
     title: "模型 Key 不进前端",
-    text: "前端只调用本地代理，密钥保留在服务端环境变量中，适合继续接真实团队账号。",
+    text: "前端只调用本地代理，DeepSeek 和 Seedance 密钥保留在服务端环境变量中。",
   },
   {
     icon: TimerReset,
-    title: "改写实验有版本记录",
-    text: "冲突加强、钩子强化、本地化表达、评分建议都可以保存成版本，便于复盘与回滚。",
+    title: "每次改写都能回到上一稿",
+    text: "冲突加强、钩子强化、本地化表达都可以保存记录，便于继续打磨。",
   },
   {
-    icon: Gauge,
-    title: "评分围绕投流剪辑",
-    text: "不是泛泛给分，而是看钩子、情绪、反转、人设、本地化、可剪辑度和合规风险。",
+    icon: Clapperboard,
+    title: "剧本直接衔接真实视频",
+    text: "结构化剧本内置分镜提示，生成后可直接进入 Seedance 真实视频流程。",
   },
   {
     icon: Database,
@@ -100,31 +84,31 @@ const benefits = [
   },
   {
     icon: Users2,
-    title: "团队协作不是附属功能",
-    text: "成员、角色、评论、导出记录已经进入主流程，适合制片、编剧、运营和投流一起使用。",
+    title: "一人公司也能持续生产",
+    text: "项目、备注、导出记录和成本日志都在本地闭环，不需要搭复杂协作系统。",
   },
 ];
 
 const proof = [
   "DeepSeek 生成与定向改写",
-  "Doubao-Seed-2.0 视频样片",
+  "Seedance 真实视频生成",
   "SQLite 持久化与审计",
   "AI 调用日志与成本统计",
   "TXT / PDF / DOC / JSON 导出",
-  "团队邀请与密码重置",
-  "模板效果回流与分镜建议",
+  "120 个短剧模板",
+  "结构化剧本与分镜建议",
 ];
 
 const testimonials = [
   {
     name: "李砚",
-    role: "短剧制片负责人",
-    quote: "立项会以前靠口头描述，现在直接用模板、评分和前三集样稿讨论，决策速度明显更快。",
+    role: "短剧项目主理人",
+    quote: "以前一个创意要拆很久，现在先用模板和前三集样稿定方向，效率明显更快。",
   },
   {
     name: "周岚",
     role: "编剧统筹",
-    quote: "版本实验很实用。领导要加强羞辱、运营要强化开场，我可以保留每一版，不会把上一稿覆盖掉。",
+    quote: "定向改写很实用。想加强羞辱或强化开场时，可以直接让当前稿继续往目标方向收敛。",
   },
   {
     name: "陈柏",
@@ -149,15 +133,15 @@ const faqItems = [
   },
   {
     question: "模板能继续扩展吗？",
-    answer: "能。内置模板已经按类型和热度组织，也支持复制当前模板、保存团队模板、安装社区模板，并用投流数据回流模板效果。",
+    answer: "能。内置模板已经按类型和热度组织，这次已扩展到 120 个，后续继续追加也只需要维护模板数据。",
   },
   {
     question: "生成结果一定是中文吗？",
-    answer: "当前提示词和数据结构都面向简体中文输出，适合中文团队做短剧出海的策划、复盘和交付。",
+    answer: "当前提示词和数据结构都面向简体中文输出，适合个人创作者做短剧出海选题、剧本和视频生成。",
   },
   {
-    question: "可以把剧本交给团队或客户吗？",
-    answer: "可以导出 TXT、PDF、DOC、JSON，也可以备份整个工作区，包含项目、版本、评论、成员和自定义模板。",
+    question: "生成后可以拿到文件吗？",
+    answer: "可以导出 TXT、PDF、DOC、JSON，也可以直接在工作台继续生成真实视频。",
   },
   {
     question: "后续接账号和数据库会推倒重来吗？",
@@ -165,12 +149,59 @@ const faqItems = [
   },
 ];
 
+const landingModules = [
+  { id: "workflow", label: "生产流程", eyebrow: "Workflow", title: "从 brief 到真实视频，一条线跑完" },
+  { id: "templates", label: "模板库", eyebrow: "Template Map", title: `${templates.length} 个热门模板，按类型和热度排序` },
+  { id: "benefits", label: "核心能力", eyebrow: "Benefits", title: "给一人公司一条可复用的生产线" },
+  { id: "feedback", label: "创作者反馈", eyebrow: "Creator Feedback", title: "面向个人短剧工作流的试用反馈" },
+  { id: "ops", label: "上线准备", eyebrow: "Production Ready", title: "生成、改写、真实视频、导出、日志都已闭环" },
+  { id: "faq", label: "FAQ", eyebrow: "FAQ", title: "上线前最常被问到的 6 个问题" },
+];
+
 export default function LandingPage({ onLaunch }) {
+  const [activeModule, setActiveModule] = useState("workflow");
+  const [generatedVideos, setGeneratedVideos] = useState([]);
+  const [activeVideoIndex, setActiveVideoIndex] = useState(0);
   const topTemplates = [...templates].sort((a, b) => a.heatRank - b.heatRank).slice(0, 7);
   const typeStats = templateTypes.map((type) => ({
     type,
     count: templates.filter((template) => template.type === type).length,
   }));
+  const activeModuleMeta = landingModules.find((item) => item.id === activeModule) || landingModules[0];
+  const activeVideo = generatedVideos[activeVideoIndex] || generatedVideos[0] || null;
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/showcase/generated-videos", { credentials: "same-origin" })
+      .then((response) => (response.ok ? response.json() : { videos: [] }))
+      .then((data) => {
+        if (cancelled) return;
+        const videos = Array.isArray(data.videos) ? data.videos.filter((video) => video.localVideoUrl) : [];
+        setGeneratedVideos(videos);
+        setActiveVideoIndex(0);
+      })
+      .catch(() => {
+        if (!cancelled) setGeneratedVideos([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (generatedVideos.length < 2) return undefined;
+    const timer = window.setInterval(() => {
+      setActiveVideoIndex((index) => (index + 1) % generatedVideos.length);
+    }, 8000);
+    return () => window.clearInterval(timer);
+  }, [generatedVideos.length]);
+
+  function openModule(moduleId) {
+    setActiveModule(moduleId);
+    window.setTimeout(() => {
+      document.getElementById("modules")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
+  }
 
   return (
     <div className="landing-shell" id="ai-short-drama-script-generator">
@@ -183,81 +214,45 @@ export default function LandingPage({ onLaunch }) {
         </a>
         <div className="landing-nav-links">
           <a href="#demo">演示</a>
-          <a href="#templates">模板</a>
-          <a href="#benefits">能力</a>
-          <a href="#faq">FAQ</a>
+          <button className="nav-tab-link" type="button" onClick={() => openModule("templates")}>模板</button>
+          <button className="nav-tab-link" type="button" onClick={() => openModule("benefits")}>能力</button>
+          <button className="nav-tab-link" type="button" onClick={() => openModule("faq")}>FAQ</button>
           <button type="button" onClick={onLaunch}>
             进入工作台
           </button>
         </div>
       </nav>
 
-      <header className="landing-hero">
-        <div className="hero-stage" aria-hidden="true">
-          <div className="stage-marquee">
-            {["复仇", "CEO", "狼人", "契约婚姻", "真假千金", "黑帮替嫁", "带球归来", "职场反杀"].map((item) => (
-              <span key={item}>{item}</span>
-            ))}
-          </div>
-          <div className="story-lane lane-one">
-            <span>10 秒定调</span>
-            <b>她签下离婚协议</b>
-            <em>钩子强度 91</em>
-          </div>
-          <div className="story-lane lane-two">
-            <span>30 秒冲突</span>
-            <b>所有人当众羞辱她</b>
-            <em>反转频率 84</em>
-          </div>
-          <div className="story-lane lane-three">
-            <span>90 秒悬念</span>
-            <b>收购方代表叫她董事长</b>
-            <em>投流可剪辑 88</em>
-          </div>
-          <div className="stage-score">
-            <Gauge size={20} />
-            <strong>87</strong>
-            <span>剧本评分</span>
-          </div>
-          <div className="stage-cut">
-            <Play size={18} />
-            <span>可直接进入投流测试</span>
-          </div>
-        </div>
-
+      <header className="landing-hero video-hero">
         <div className="hero-copy">
-          <p className="landing-kicker">AI 短剧剧本生成器 / DeepSeek 剧本 + Doubao 视频样片</p>
-          <h1>把短剧创意变成可拍、可改、可投流的中文剧本资产</h1>
+          <p className="landing-kicker">AI 短剧剧本生成器 / DeepSeek 剧本 + Seedance 真实视频</p>
+          <h1>一人公司也能把短剧创意生成剧本和真实视频</h1>
           <p>
-            DJCYTools 用 DeepSeek、Doubao-Seed-2.0、热门短剧模板、结构化编辑器和版本实验，把短剧出海团队从零散灵感推进到可导出的剧本和样片制作包。
+            DJCYTools 用 DeepSeek 写中文短剧，用 Seedance 生成真实视频，把“复仇、逆袭、职场反杀”这类创意直接推进到可剪、可改、可投流的成片工作流。
           </p>
           <div className="hero-actions">
             <button className="landing-primary" type="button" onClick={onLaunch}>
               <Wand2 size={18} />
-              立即生成短剧方案
+              进入生成工作台
             </button>
             <a className="landing-secondary" href="#demo">
               查看产品演示
               <ArrowRight size={17} />
             </a>
           </div>
-          <div className="hero-proof" aria-label="产品可信信号">
-            {heroProof.map((item) => (
-              <span key={item}>
-                <BadgeCheck size={15} />
-                {item}
-              </span>
-            ))}
-          </div>
-          <div className="hero-metrics">
-            {heroMetrics.map((metric) => (
-              <div key={metric.label}>
-                <strong>{metric.value}</strong>
-                <span>{metric.label}</span>
-              </div>
-            ))}
+          <div className="hero-trust-line" aria-label="产品可信信号">
+            <span>{templates.length} 个热门模板</span>
+            <span>{generatedVideos.length || 0} 条真实成片</span>
+            <span>API Key 服务端代理</span>
           </div>
         </div>
+        <HeroVideoCarousel
+          activeVideo={activeVideo}
+          activeVideoIndex={activeVideoIndex}
+          videos={generatedVideos}
+          onLaunch={onLaunch}
+          onSelectVideo={setActiveVideoIndex}
+        />
       </header>
 
       <main>
@@ -268,7 +263,7 @@ export default function LandingPage({ onLaunch }) {
               <h2>不是静态宣传页，首屏之后直接展示工作台怎么生产</h2>
             </div>
             <p>
-              把 brief、模板、AI 生成、评分、版本、导出放在同一条生产线上，访客不用猜产品能力。
+              把 brief、模板、AI 生成、结构化编辑、真实视频和导出放在同一条生产线上，打开就能看懂怎么产出。
             </p>
           </div>
           <div className="product-media-grid">
@@ -283,179 +278,187 @@ export default function LandingPage({ onLaunch }) {
                 <img src={workbenchPreview} alt="DJCYTools AI 短剧工作台真实界面截图" loading="lazy" />
                 <figcaption>
                   <span>真实工作台截图</span>
-                  <b>生成、评分、模板、日志在同一界面协作</b>
+                  <b>生成、结构化剧本、真实视频、导出在同一界面完成</b>
                 </figcaption>
               </figure>
             </div>
-            <div className="media-notes">
-              {productionSignals.map((item) => (
-                <article key={item.label}>
-                  <MonitorPlay size={19} />
-                  <div>
-                    <h3>{item.label}</h3>
-                    <p>{item.value}</p>
-                  </div>
-                </article>
-              ))}
+            <div className="product-side-rail">
+              <div className="media-notes">
+                {productionSignals.map((item) => (
+                  <article key={item.label}>
+                    <MonitorPlay size={19} />
+                    <div>
+                      <h3>{item.label}</h3>
+                      <p>{item.value}</p>
+                    </div>
+                  </article>
+                ))}
+              </div>
             </div>
           </div>
         </section>
 
-        <section className="landing-band workflow-band" id="workflow">
-          <div className="landing-section-head">
-            <p className="landing-kicker">Workflow</p>
-            <h2>从 brief 到投流版本，一条线跑完</h2>
-          </div>
-          <div className="workflow-grid">
-            {workflow.map((item) => (
-              <article key={item.title}>
-                <item.icon size={22} />
-                <h3>{item.title}</h3>
-                <p>{item.text}</p>
-              </article>
-            ))}
-          </div>
-        </section>
-
-        <section className="landing-band template-band" id="templates">
+        <section className="landing-band module-band" id="modules">
           <div className="landing-section-head landing-section-head-split">
             <div>
-              <p className="landing-kicker">Template Map</p>
-              <h2>{templates.length} 个热门模板，按类型和热度排序</h2>
+              <p className="landing-kicker">{activeModuleMeta.eyebrow}</p>
+              <h2>{activeModuleMeta.title}</h2>
             </div>
             <p>
-              模板不是列表装饰，而是生成参数的一部分。团队可以从题材热度、角色关系和开场钩子切入。
+              首页只保留核心动线，其余信息按模块切换查看。想看模板、能力、上线准备或 FAQ，不需要一路滚到底。
             </p>
           </div>
-          <div className="template-showcase">
-            <div className="type-rail">
-              {typeStats.map((item) => (
-                <span key={item.type}>
-                  {item.type}
-                  <b>{item.count}</b>
-                </span>
-              ))}
-            </div>
-            <div className="template-rank">
-              {topTemplates.map((template) => (
-                <article key={template.id}>
-                  <span>#{template.heatRank}</span>
-                  <div>
-                    <h3>{template.name}</h3>
-                    <p>{template.hook}</p>
-                  </div>
-                  <strong>{template.heatScore}</strong>
-                </article>
-              ))}
-            </div>
-          </div>
-        </section>
 
-        <section className="landing-band benefits-band" id="benefits">
-          <div className="landing-section-head">
-            <p className="landing-kicker">Benefits</p>
-            <h2>给制片、编剧和投流同一套可复盘语言</h2>
-          </div>
-          <div className="benefit-grid">
-            {benefits.map((item, index) => (
-              <article className={index === 0 ? "benefit-card featured-benefit" : "benefit-card"} key={item.title}>
-                <item.icon size={23} />
-                <h3>{item.title}</h3>
-                <p>{item.text}</p>
-              </article>
+          <div className="landing-module-tabs" role="tablist" aria-label="首页信息模块">
+            {landingModules.map((item) => (
+              <button
+                aria-controls={`landing-panel-${item.id}`}
+                aria-selected={activeModule === item.id}
+                className={activeModule === item.id ? "active" : ""}
+                id={`landing-tab-${item.id}`}
+                key={item.id}
+                role="tab"
+                type="button"
+                onClick={() => setActiveModule(item.id)}
+              >
+                {item.label}
+              </button>
             ))}
           </div>
-        </section>
 
-        <section className="landing-band testimonials-band" id="testimonials">
-          <div className="landing-section-head landing-section-head-split">
-            <div>
-              <p className="landing-kicker">Team Feedback</p>
-              <h2>面向短剧团队真实工作流的试用反馈</h2>
-            </div>
-            <p>
-              这些反馈对应制片、编剧、投流、运营四个角色，重点不是夸 AI，而是减少团队协作里的返工。
-            </p>
-          </div>
-          <div className="testimonial-grid">
-            {testimonials.map((item) => (
-              <article key={item.name}>
-                <div className="testimonial-top">
-                  <span className="avatar-mark">{item.name.slice(0, 1)}</span>
-                  <div>
-                    <h3>{item.name}</h3>
-                    <p>{item.role}</p>
-                  </div>
-                  <span className="rating-pill">
-                    <Star size={13} />
-                    5.0
-                  </span>
-                </div>
-                <blockquote>{item.quote}</blockquote>
-              </article>
-            ))}
-          </div>
-        </section>
+          <div
+            aria-labelledby={`landing-tab-${activeModule}`}
+            className={`landing-module-panel ${activeModule}`}
+            id={`landing-panel-${activeModule}`}
+            role="tabpanel"
+          >
+            {activeModule === "workflow" && (
+              <div className="workflow-grid">
+                {workflow.map((item) => (
+                  <article key={item.title}>
+                    <item.icon size={22} />
+                    <h3>{item.title}</h3>
+                    <p>{item.text}</p>
+                  </article>
+                ))}
+              </div>
+            )}
 
-        <section className="landing-band ops-band" id="ops">
-          <div className="landing-section-head">
-            <p className="landing-kicker">Production Ready</p>
-            <h2>生成、改写、评分、导出、日志都已闭环</h2>
-          </div>
-          <div className="ops-grid">
-            <div className="ops-copy">
-              <Clapperboard size={28} />
-              <h3>这不是演示壳，而是能继续生产的工具入口</h3>
-              <p>
-                当前版本已经包含服务端工作区、AI 调用记录、团队权限和多格式导出，适合继续接真实账号体系和云数据库。
-              </p>
-              <button type="button" onClick={onLaunch}>
-                打开工作台
-                <ArrowRight size={17} />
-              </button>
-            </div>
-            <div className="proof-list">
-              {proof.map((item) => (
-                <p key={item}>
-                  <CheckCircle2 size={17} />
-                  {item}
-                </p>
-              ))}
-              <p>
-                <ShieldCheck size={17} />
-                API Key 仅在服务端代理使用
-              </p>
-            </div>
-          </div>
-        </section>
-
-        <section className="landing-band faq-band" id="faq">
-          <div className="faq-layout">
-            <div className="faq-copy">
-              <p className="landing-kicker">FAQ</p>
-              <h2>上线前最常被问到的 6 个问题</h2>
-              <p>
-                重点覆盖密钥安全、AI 失败兜底、模板扩展、中文输出、交付格式和后续数据库升级。
-              </p>
-              <button type="button" onClick={onLaunch}>
-                去工作台验证
-                <ArrowRight size={17} />
-              </button>
-            </div>
-            <div className="faq-list">
-              {faqItems.map((item, index) => (
-                <details key={item.question} open={index === 0}>
-                  <summary>
-                    <span>
-                      <HelpCircle size={17} />
-                      {item.question}
+            {activeModule === "templates" && (
+              <div className="template-showcase">
+                <div className="type-rail">
+                  {typeStats.map((item) => (
+                    <span key={item.type}>
+                      {item.type}
+                      <b>{item.count}</b>
                     </span>
-                    <ChevronDown size={18} />
-                  </summary>
-                  <p>{item.answer}</p>
-                </details>
-              ))}
-            </div>
+                  ))}
+                </div>
+                <div className="template-rank">
+                  {topTemplates.map((template) => (
+                    <article key={template.id}>
+                      <span>#{template.heatRank}</span>
+                      <div>
+                        <h3>{template.name}</h3>
+                        <p>{template.hook}</p>
+                      </div>
+                      <strong>{template.heatScore}</strong>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {activeModule === "benefits" && (
+              <div className="benefit-grid">
+                {benefits.map((item, index) => (
+                  <article className={index === 0 ? "benefit-card featured-benefit" : "benefit-card"} key={item.title}>
+                    <item.icon size={23} />
+                    <h3>{item.title}</h3>
+                    <p>{item.text}</p>
+                  </article>
+                ))}
+              </div>
+            )}
+
+            {activeModule === "feedback" && (
+              <div className="testimonial-grid">
+                {testimonials.map((item) => (
+                  <article key={item.name}>
+                    <div className="testimonial-top">
+                      <span className="avatar-mark">{item.name.slice(0, 1)}</span>
+                      <div>
+                        <h3>{item.name}</h3>
+                        <p>{item.role}</p>
+                      </div>
+                      <span className="rating-pill">
+                        <Star size={13} />
+                        5.0
+                      </span>
+                    </div>
+                    <blockquote>{item.quote}</blockquote>
+                  </article>
+                ))}
+              </div>
+            )}
+
+            {activeModule === "ops" && (
+              <div className="ops-grid">
+                <div className="ops-copy">
+                  <Clapperboard size={28} />
+                  <h3>这不是演示壳，而是能继续生产的工具入口</h3>
+                  <p>
+                    当前版本已经包含服务端工作区、AI 调用记录、真实视频任务和多格式导出；多实例正式上线时按迁移脚本切换 PostgreSQL。
+                  </p>
+                  <button type="button" onClick={onLaunch}>
+                    打开工作台
+                    <ArrowRight size={17} />
+                  </button>
+                </div>
+                <div className="proof-list">
+                  {proof.map((item) => (
+                    <p key={item}>
+                      <CheckCircle2 size={17} />
+                      {item}
+                    </p>
+                  ))}
+                  <p>
+                    <ShieldCheck size={17} />
+                    API Key 仅在服务端代理使用
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {activeModule === "faq" && (
+              <div className="faq-layout">
+                <div className="faq-copy">
+                  <HelpCircle size={26} />
+                  <h3>上线前最常被问到的问题</h3>
+                  <p>
+                    重点覆盖密钥安全、AI 失败兜底、模板扩展、中文输出、导出格式和后续数据库升级。
+                  </p>
+                  <button type="button" onClick={onLaunch}>
+                    去工作台验证
+                    <ArrowRight size={17} />
+                  </button>
+                </div>
+                <div className="faq-list">
+                  {faqItems.map((item, index) => (
+                    <details key={item.question} open={index === 0}>
+                      <summary>
+                        <span>
+                          <HelpCircle size={17} />
+                          {item.question}
+                        </span>
+                        <ChevronDown size={18} />
+                      </summary>
+                      <p>{item.answer}</p>
+                    </details>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </section>
 
@@ -464,17 +467,17 @@ export default function LandingPage({ onLaunch }) {
             <p className="landing-kicker">Start Now</p>
             <h2>今晚把下一个短剧项目从灵感推进到可导出的首版方案</h2>
             <p>
-              先用模板选题，再让 DeepSeek 生成首版，最后用评分、版本、Doubao 视频样片和导出把讨论落到文件里。
+              先用模板选题，再让 DeepSeek 生成首版，最后用结构化剧本、Seedance 真实视频和导出把讨论落到文件里。
             </p>
             <div className="final-cta-actions">
               <button className="landing-primary" type="button" onClick={onLaunch}>
                 <Wand2 size={18} />
                 开始生成
               </button>
-              <a className="landing-secondary dark" href="#templates">
+              <button className="landing-secondary dark" type="button" onClick={() => openModule("templates")}>
                 先看模板库
                 <ArrowRight size={17} />
-              </a>
+              </button>
             </div>
           </div>
           <div className="final-cta-points">
@@ -484,7 +487,7 @@ export default function LandingPage({ onLaunch }) {
             </p>
             <p>
               <MessageSquareText size={17} />
-              团队评论留痕
+              创作备注留痕
             </p>
             <p>
               <ShieldCheck size={17} />
@@ -502,41 +505,109 @@ export default function LandingPage({ onLaunch }) {
             </span>
             <b>DJCYTools</b>
           </a>
-          <p>AI 短剧叙事工厂，面向短剧出海团队的本地全栈 MVP。</p>
+          <p>AI 短剧叙事工厂，面向一人公司的短视频生成工作台。</p>
         </div>
         <div className="footer-columns">
           <div>
             <h3>产品</h3>
             <a href="#demo">产品演示</a>
-            <a href="#templates">热门模板</a>
-            <a href="#benefits">核心能力</a>
+            <button type="button" onClick={() => openModule("templates")}>热门模板</button>
+            <button type="button" onClick={() => openModule("benefits")}>核心能力</button>
           </div>
           <div>
             <h3>工作流</h3>
-            <a href="#workflow">生成流程</a>
-            <a href="#ops">生产闭环</a>
+            <button type="button" onClick={() => openModule("workflow")}>生成流程</button>
+            <button type="button" onClick={() => openModule("ops")}>生产闭环</button>
             <button type="button" onClick={onLaunch}>进入工作台</button>
           </div>
           <div>
             <h3>联系</h3>
             <a href="mailto:team@djcytools.local">
               <Mail size={14} />
-              team@djcytools.local
+              hello@djcytools.local
             </a>
-            <a href="#faq">FAQ</a>
+            <button type="button" onClick={() => openModule("faq")}>FAQ</button>
           </div>
           <div>
             <h3>说明</h3>
-            <a href="#faq">隐私与密钥安全</a>
-            <a href="#faq">数据备份说明</a>
-            <a href="#faq">导出格式说明</a>
+            <button type="button" onClick={() => openModule("faq")}>隐私与密钥安全</button>
+            <button type="button" onClick={() => openModule("faq")}>数据备份说明</button>
+            <button type="button" onClick={() => openModule("faq")}>导出格式说明</button>
           </div>
         </div>
         <div className="footer-bottom">
           <span>© 2026 DJCYTools</span>
-          <span>AI 生成内容需由团队复核后发布</span>
+          <span>AI 生成内容发布前请人工复核</span>
         </div>
       </footer>
     </div>
   );
+}
+
+function HeroVideoCarousel({ activeVideo, activeVideoIndex, videos, onLaunch, onSelectVideo }) {
+  const title = videoDisplayTitle(activeVideo, activeVideoIndex);
+  return (
+    <aside className="hero-video-carousel" aria-label="首页真实视频轮播">
+      <div className="hero-video-head">
+        <span>
+          <Play size={16} />
+          真实视频轮播
+        </span>
+        <b>{videos.length ? `${videos.length} 条成片` : "等待成片"}</b>
+      </div>
+      {activeVideo ? (
+        <>
+          <div className="hero-video-player">
+            <video key={activeVideo.localVideoUrl} src={activeVideo.localVideoUrl} autoPlay muted loop playsInline controls preload="metadata" />
+          </div>
+          <div className="hero-video-meta">
+            <h3>{title}</h3>
+            <p>
+              {activeVideo.model || "Seedance"} · {activeVideo.duration || 15}s · {activeVideo.ratio || "9:16"}
+            </p>
+          </div>
+          <div className="hero-video-strip" aria-label="全部已生成视频">
+            <div className="hero-video-strip-head">
+              <b>全部生成视频</b>
+              <span>{videos.length} 条</span>
+            </div>
+            <div className="hero-video-thumbs">
+              {videos.map((video, index) => (
+                <button
+                  aria-label={`查看第 ${index + 1} 条已生成视频`}
+                  className={index === activeVideoIndex ? "active" : ""}
+                  key={video.taskId || video.localVideoUrl}
+                  type="button"
+                  onClick={() => onSelectVideo(index)}
+                >
+                  <span className="hero-video-thumb">
+                    <video src={video.localVideoUrl} muted playsInline preload="metadata" />
+                  </span>
+                  <b>{videoDisplayTitle(video, index)}</b>
+                  <small>{[video.duration ? `${video.duration}s` : "", video.ratio, video.downloadedAt ? "已入库" : ""].filter(Boolean).join(" · ")}</small>
+                </button>
+              ))}
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="hero-video-empty">
+          <Clapperboard size={26} />
+          <h3>还没有可轮播的真实视频</h3>
+          <p>工作台生成成功并下载到本地后，首页首屏会自动轮播最新成片。</p>
+          <button type="button" onClick={onLaunch}>
+            去生成真实视频
+            <ArrowRight size={16} />
+          </button>
+        </div>
+      )}
+    </aside>
+  );
+}
+
+function videoDisplayTitle(video, index = 0) {
+  const title = String(video?.title || "").trim();
+  if (title && !/^\?+$/.test(title)) return title;
+  if (video?.taskId) return `Seedance 成片 ${index + 1}`;
+  return "生成后自动展示";
 }

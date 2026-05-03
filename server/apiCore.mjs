@@ -62,6 +62,8 @@ const DEFAULT_VIDEO_AI_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3";
 const DEFAULT_REAL_VIDEO_MODEL = "doubao-seedance-2-0-260128";
 const DEFAULT_REAL_VIDEO_PROVIDER = "Doubao-Seedance-2.0";
 const DEFAULT_REAL_VIDEO_TASKS_URL = "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks";
+const DEFAULT_REAL_VIDEO_SYNC_PAGE_SIZE = 30;
+const DEFAULT_REAL_VIDEO_SYNC_TIMEOUT_MS = 15_000;
 const ARK_MODEL_ACTIVATION_URL = "https://console.volcengine.com/ark/region:ark+cn-beijing/openManagement?LLM=%7B%7D&OpenTokenDrawer=false";
 const DEFAULT_NOTIFICATION_TIMEOUT_MS = 10_000;
 const DEFAULT_RATE_LIMIT_WINDOW_MS = 60_000;
@@ -1111,9 +1113,58 @@ function realVideoTaskUrl(config = {}, taskId = "") {
   return taskId ? `${endpoint}/${encodeURIComponent(taskId)}` : endpoint;
 }
 
+function realVideoTaskListUrl(config = {}, pageSize = DEFAULT_REAL_VIDEO_SYNC_PAGE_SIZE) {
+  const url = new URL(realVideoTaskUrl(config));
+  url.searchParams.set("page_num", "1");
+  url.searchParams.set("page_size", String(pageSize));
+  return url.toString();
+}
+
 function generatedVideoApiPath(taskId = "", extension = "mp4") {
   const safeId = String(taskId || "").replace(/[^a-zA-Z0-9_-]/g, "");
   return safeId ? `/api/generated-videos/${safeId}.${extension}` : "";
+}
+
+function normalizeRealVideoTaskItems(data = {}) {
+  if (Array.isArray(data.items)) return data.items;
+  if (Array.isArray(data.tasks)) return data.tasks;
+  if (Array.isArray(data.data?.items)) return data.data.items;
+  if (Array.isArray(data.data?.tasks)) return data.data.tasks;
+  if (Array.isArray(data.data)) return data.data;
+  return [];
+}
+
+async function syncGeneratedVideosFromProvider({ rootDir, env = {}, pageSize = DEFAULT_REAL_VIDEO_SYNC_PAGE_SIZE }) {
+  if (String(env.DJCYTOOLS_DISABLE_REAL_VIDEO_SYNC || "").trim() === "1") return { synced: 0, skipped: true };
+  const config = getRealVideoProviderConfig(env);
+  if (!config.apiKey) return { synced: 0, skipped: true };
+
+  const controller = new AbortController();
+  const timeoutMs = Number(env.DJCYTOOLS_REAL_VIDEO_SYNC_TIMEOUT_MS || DEFAULT_REAL_VIDEO_SYNC_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(realVideoTaskListUrl(config, pageSize), {
+      method: "GET",
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+      },
+    });
+    clearTimeout(timeout);
+    if (!response.ok) return { synced: 0, skipped: false };
+    const data = await response.json().catch(() => ({}));
+    let synced = 0;
+    for (const rawTask of normalizeRealVideoTaskItems(data)) {
+      const task = normalizeRealVideoTask(rawTask);
+      if (!task.model && rawTask?.model) task.raw = { ...task.raw, model: rawTask.model };
+      const localVideoUrl = await persistGeneratedVideo({ rootDir, task, provider: config.providerName, model: rawTask?.model || config.model });
+      if (localVideoUrl) synced += 1;
+    }
+    return { synced, skipped: false };
+  } catch {
+    clearTimeout(timeout);
+    return { synced: 0, skipped: false };
+  }
 }
 
 async function listGeneratedVideos({ rootDir }) {
@@ -1144,6 +1195,7 @@ async function listGeneratedVideos({ rootDir }) {
         ratio: meta.ratio || "",
         resolution: meta.resolution || "",
         downloadedAt: meta.downloadedAt || "",
+        title: meta.title || "",
       });
     } catch {
       // Metadata can be rewritten while a task finishes; skip partial files.
@@ -1161,6 +1213,12 @@ async function persistGeneratedVideo({ rootDir, task = {}, provider = "", model 
   const videoPath = path.join(dir, `${safeId}.mp4`);
   const metaPath = path.join(dir, `${safeId}.json`);
   await mkdir(dir, { recursive: true });
+  let existingMeta = {};
+  try {
+    existingMeta = JSON.parse(await readFile(metaPath, "utf8"));
+  } catch {
+    existingMeta = {};
+  }
   try {
     await access(videoPath);
   } catch {
@@ -1177,10 +1235,11 @@ async function persistGeneratedVideo({ rootDir, task = {}, provider = "", model 
     model,
     localVideoUrl: generatedVideoApiPath(safeId),
     sourceVideoUrl: task.videoUrl,
-    downloadedAt: new Date().toISOString(),
+    downloadedAt: existingMeta.downloadedAt || new Date().toISOString(),
     duration: raw.duration || SEEDANCE_2_MAX_DURATION_SECONDS,
     ratio: raw.ratio || "",
     resolution: raw.resolution || "",
+    title: existingMeta.title || raw.title || "",
   }, null, 2), "utf8");
   return generatedVideoApiPath(safeId);
 }
@@ -1482,6 +1541,9 @@ async function handleCreateRealVideoTask({ req, res, env, rootDir, session }) {
       status: "success",
       model: config.model,
       instruction: "real_video_task",
+      taskId: task.id,
+      providerStatus: task.status,
+      promptPreview: compactText(requestBody.content?.[0]?.text || "", 220),
       durationMs: Date.now() - startedAt,
       createdAt: new Date().toISOString(),
     }, env, session);
@@ -1578,8 +1640,28 @@ async function handleReadGeneratedVideo({ res, rootDir, filename }) {
   return true;
 }
 
-async function handleListGeneratedVideos({ res, rootDir }) {
-  sendJson(res, 200, { videos: await listGeneratedVideos({ rootDir }) });
+async function handleListGeneratedVideos({ res, rootDir, env }) {
+  const sync = await syncGeneratedVideosFromProvider({ rootDir, env });
+  sendJson(res, 200, { videos: await listGeneratedVideos({ rootDir }), sync });
+  return true;
+}
+
+async function handleListGeneratedVideoShowcase({ res, rootDir, env }) {
+  await syncGeneratedVideosFromProvider({ rootDir, env });
+  const videos = (await listGeneratedVideos({ rootDir })).map((video) => ({
+    taskId: video.taskId,
+    id: video.id,
+    status: video.status,
+    provider: video.provider,
+    model: video.model,
+    localVideoUrl: generatedVideoApiPath(video.taskId).replace("/api/generated-videos/", "/api/showcase/generated-videos/"),
+    duration: video.duration,
+    ratio: video.ratio,
+    resolution: video.resolution,
+    downloadedAt: video.downloadedAt,
+    title: video.title,
+  }));
+  sendJson(res, 200, { videos });
   return true;
 }
 
@@ -1749,6 +1831,15 @@ export async function handleApiRequest({ req, res, env, rootDir = process.cwd() 
     return true;
   }
 
+  if (pathname === "/api/showcase/generated-videos" && req.method === "GET") {
+    return handleListGeneratedVideoShowcase({ res, rootDir, env });
+  }
+
+  const showcaseVideoMatch = pathname.match(/^\/api\/showcase\/generated-videos\/([a-zA-Z0-9_-]+\.mp4)$/);
+  if (showcaseVideoMatch && req.method === "GET") {
+    return handleReadGeneratedVideo({ res, rootDir, filename: showcaseVideoMatch[1] });
+  }
+
   const session = readSession(rootDir, env, getSessionToken(req));
   if (!session) {
     sendAuthRequired(res);
@@ -1763,7 +1854,7 @@ export async function handleApiRequest({ req, res, env, rootDir = process.cwd() 
 
   if (pathname === "/api/generated-videos" && req.method === "GET") {
     if (!ensureRole(res, session, "viewer")) return true;
-    return handleListGeneratedVideos({ res, rootDir });
+    return handleListGeneratedVideos({ res, rootDir, env });
   }
 
   const generatedVideoMatch = pathname.match(/^\/api\/generated-videos\/([a-zA-Z0-9_-]+\.(?:mp4|json))$/);
@@ -1783,7 +1874,6 @@ export async function handleApiRequest({ req, res, env, rootDir = process.cwd() 
     const body = await readRequestBody(req, { maxBytes, timeoutMs: requestTimeoutMs });
     const workspace = body.workspace || body;
     await writeWorkspace(rootDir, env, session, workspace);
-    appendAudit(rootDir, env, session, "workspace.saved", { targetType: "workspace", targetId: session.team.id });
     sendJson(res, 200, { ok: true, savedAt: new Date().toISOString() });
     return true;
   }

@@ -9,12 +9,14 @@
     "test": "node --no-warnings=ExperimentalWarning --test",
     "test:e2e": "playwright test",
     "check": "npm run test && npm run build",
+    "migrate:postgres": "node --no-warnings=ExperimentalWarning scripts/migrate-sqlite-to-postgres.mjs",
     "preview": "node --no-warnings=ExperimentalWarning ./node_modules/vite/bin/vite.js preview --host 127.0.0.1",
     "start": "node --no-warnings=ExperimentalWarning server.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.0.4",
     "lucide-react": "^0.468.0",
+    "pg": "^8.20.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "typescript": "^5.9.3",

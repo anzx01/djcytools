@@ -9,7 +9,6 @@ import {
   FileText,
   Flame,
   FolderOpen,
-  GitFork,
   KeyRound,
   MailPlus,
   MessageSquare,
@@ -19,7 +18,6 @@ import {
   Save,
   Search,
   Send,
-  ShieldAlert,
   Store,
   Trash2,
   X,
@@ -482,6 +480,10 @@ export function ScriptEditor({ version, patchActiveVersion, onRewrite, isRewriti
   const characters = version.characters || [];
   const outline = version.outline || [];
   const episodes = version.episodes || [];
+  const storyboards = version.storyboards || [];
+  const storyboardByEpisode = new Map(
+    storyboards.map((board, index) => [Number(board.episodeNumber || index + 1), board]),
+  );
 
   return (
     <div className="editor-content">
@@ -576,35 +578,56 @@ export function ScriptEditor({ version, patchActiveVersion, onRewrite, isRewriti
       </div>
 
       <div className="section-band">
-        <h4>前 3 集脚本</h4>
-        {episodes.map((episode, index) => (
-          <article className="episode-editor" key={episode.number}>
-            <div className="episode-head">
-              <strong>第 {episode.number} 集</strong>
-              <input value={episode.title} onChange={(event) => updateEpisode(index, "title", event.target.value)} />
-            </div>
-            <label>
-              钩子
-              <textarea rows={2} value={episode.hook} onChange={(event) => updateEpisode(index, "hook", event.target.value)} />
-            </label>
-            <label>
-              结构
-              <textarea rows={2} value={episode.beat} onChange={(event) => updateEpisode(index, "beat", event.target.value)} />
-            </label>
-            <label>
-              脚本
-              <textarea rows={4} value={episode.script} onChange={(event) => updateEpisode(index, "script", event.target.value)} />
-            </label>
-            <label>
-              核心对白
-              <textarea
-                rows={2}
-                value={(episode.dialogue || []).join("\n")}
-                onChange={(event) => updateEpisode(index, "dialogue", event.target.value)}
-              />
-            </label>
-          </article>
-        ))}
+        <h4>前 3 集剧本与分镜</h4>
+        {episodes.map((episode, index) => {
+          const storyboard = storyboardByEpisode.get(Number(episode.number)) || storyboards[index] || null;
+          const shots = storyboard?.shots || [];
+          return (
+            <article className="episode-editor" key={episode.number}>
+              <div className="episode-head">
+                <strong>第 {episode.number} 集</strong>
+                <input value={episode.title} onChange={(event) => updateEpisode(index, "title", event.target.value)} />
+              </div>
+              <label>
+                钩子
+                <textarea rows={2} value={episode.hook} onChange={(event) => updateEpisode(index, "hook", event.target.value)} />
+              </label>
+              <label>
+                结构
+                <textarea rows={2} value={episode.beat} onChange={(event) => updateEpisode(index, "beat", event.target.value)} />
+              </label>
+              <label>
+                脚本
+                <textarea rows={4} value={episode.script} onChange={(event) => updateEpisode(index, "script", event.target.value)} />
+              </label>
+              <label>
+                核心对白
+                <textarea
+                  rows={2}
+                  value={(episode.dialogue || []).join("\n")}
+                  onChange={(event) => updateEpisode(index, "dialogue", event.target.value)}
+                />
+              </label>
+              {shots.length > 0 && (
+                <div className="inline-storyboard" aria-label={`第 ${episode.number} 集分镜`}>
+                  <div className="inline-storyboard-head">
+                    <MonitorPlay size={14} />
+                    <b>分镜</b>
+                    <span>{shots.length} 个镜头</span>
+                    {storyboard?.title && storyboard.title !== episode.title && <em>{storyboard.title}</em>}
+                  </div>
+                  {shots.map((shot) => (
+                    <div className="inline-shot-row" key={`${episode.number}-${shot.time}-${shot.frame}`}>
+                      <strong>{shot.time}</strong>
+                      <p>{shot.frame}</p>
+                      <small>{[shot.camera, shot.sound, shot.prop].filter(Boolean).join(" · ")}</small>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </article>
+          );
+        })}
       </div>
     </div>
   );
@@ -625,6 +648,9 @@ function VersionMeta({ version }) {
 }
 
 export function ScoreCard({ version, onRewrite, isRewriting }) {
+  const visibleDimensions = (version.score.dimensions || []).filter(
+    (item) => item.name !== "合规风险" && item.name !== "相似度",
+  );
   return (
     <div>
       <div className="score-dial">
@@ -632,7 +658,7 @@ export function ScoreCard({ version, onRewrite, isRewriting }) {
         <small>综合分</small>
       </div>
       <div className="score-bars">
-        {version.score.dimensions.map((item) => (
+        {visibleDimensions.map((item) => (
           <div className="score-line" key={item.name}>
             <span>
               {item.name}
@@ -650,67 +676,6 @@ export function ScoreCard({ version, onRewrite, isRewriting }) {
           <button type="button" key={suggestion} onClick={() => onRewrite(suggestion)} disabled={isRewriting}>
             <Flame size={15} />
             {isRewriting ? "DeepSeek 改写中..." : suggestion}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-export function VersionPanel({ project, activeVersion, compareVersion, compareVersionId, setCompareVersionId, setWorkspace }) {
-  function setActiveVersion(versionId) {
-    setWorkspace((current) => ({
-      ...current,
-      projects: current.projects.map((item) =>
-        item.id === project.id ? { ...item, activeVersionId: versionId, updatedAt: new Date().toISOString() } : item,
-      ),
-    }));
-  }
-
-  return (
-    <div className="version-panel">
-      <label>
-        对比版本
-        <select value={compareVersionId} onChange={(event) => setCompareVersionId(event.target.value)}>
-          <option value="">自动选择上一版</option>
-          {project.versions
-            .filter((version) => version.id !== activeVersion.id)
-            .map((version) => (
-              <option key={version.id} value={version.id}>
-                {version.name}
-              </option>
-            ))}
-        </select>
-      </label>
-      {compareVersion && (
-        <div className="compare-box">
-          <div>
-            <span>当前</span>
-            <strong>{activeVersion.score.total}</strong>
-            <small>{activeVersion.name}</small>
-          </div>
-          <div>
-            <span>对照</span>
-            <strong>{compareVersion.score.total}</strong>
-            <small>{compareVersion.name}</small>
-          </div>
-        </div>
-      )}
-      <div className="version-list">
-        {project.versions.map((version) => (
-          <button
-            key={version.id}
-            type="button"
-            className={version.id === activeVersion.id ? "version-row active" : "version-row"}
-            onClick={() => setActiveVersion(version.id)}
-          >
-            <span>
-              <b>{version.name}</b>
-              <small>
-                {formatDate(version.createdAt)} · {version.templateName} · {version.source || "本地生成"}
-              </small>
-            </span>
-            <strong>{version.score.total}</strong>
           </button>
         ))}
       </div>
@@ -960,7 +925,6 @@ export function SecurityPanel({
   inviteState,
   notificationState,
   auditState,
-  migrationPlan,
   onCreateInvite,
   onUpdateNotificationDelivery,
   onDeliverNotificationWebhook,
@@ -969,6 +933,7 @@ export function SecurityPanel({
   const [inviteDraft, setInviteDraft] = useState({ email: "", name: "", role: "editor" });
   const notifications = notificationState?.notifications || [];
   const webhookConfigured = Boolean(notificationState?.webhookConfigured);
+  const visibleAuditLogs = (auditState.logs || []).filter((log) => log.action !== "workspace.saved").slice(0, 6);
 
   function submitInvite(event) {
     event.preventDefault();
@@ -1100,24 +1065,15 @@ export function SecurityPanel({
         {notifications.length === 0 && <p className="muted-note">暂无待投递通知；生成邀请或重置密码后会自动进入这里。</p>}
       </div>
 
-      <div className="migration-card">
-        <KeyRound size={16} />
-        <div>
-          <b>PostgreSQL 迁移预案</b>
-          <span>{migrationPlan?.readyForMultiInstance ? "已配置 PostgreSQL 目标" : "当前仍使用 SQLite"}</span>
-          <small>{migrationPlan?.tables?.length || 0} 张表可迁移，详见 README 的部署说明。</small>
-        </div>
-      </div>
-
       <div className="security-list audit-list">
-        {(auditState.logs || []).slice(0, 8).map((log) => (
+        {visibleAuditLogs.map((log) => (
           <p key={log.id}>
             <b>{log.action}</b>
             {log.actor}
             <small>{formatDate(log.createdAt)}</small>
           </p>
         ))}
-        {(!auditState.logs || auditState.logs.length === 0) && <p className="muted-note">暂无审计记录。</p>}
+        {visibleAuditLogs.length === 0 && <p className="muted-note">暂无关键审计记录。</p>}
       </div>
     </div>
   );
@@ -1183,73 +1139,6 @@ export function AccountSecurityPanel({ user, onChangePassword }) {
   );
 }
 
-export function CompliancePanel({ version }) {
-  const compliance = version?.complianceReport || { level: "未检测", riskScore: 0, flags: [], suggestions: [] };
-  const similarity = version?.similarityReport || { level: "未检测", maxSimilarity: 0, matches: [] };
-  return (
-    <div className="compliance-panel">
-      <div className="compliance-grid">
-        <div>
-          <ShieldAlert size={17} />
-          <span>合规等级</span>
-          <strong>{compliance.level}</strong>
-          <small>{compliance.riskScore} / 100</small>
-        </div>
-        <div>
-          <GitFork size={17} />
-          <span>相似度</span>
-          <strong>{similarity.level}</strong>
-          <small>{Math.round((similarity.maxSimilarity || 0) * 100)}%</small>
-        </div>
-      </div>
-      <div className="security-list">
-        {(compliance.flags || []).map((flag) => (
-          <p key={`${flag.label}-${flag.keyword}`}>
-            <b>{flag.label}</b>
-            {flag.suggestion}
-          </p>
-        ))}
-        {(!compliance.flags || compliance.flags.length === 0) && <p className="muted-note">未命中高风险规则。</p>}
-      </div>
-      <div className="security-list">
-        {(similarity.matches || []).map((match) => (
-          <p key={match.versionId}>
-            <b>{match.versionName}</b>
-            相似 {Math.round(match.similarity * 100)}%
-            <small>{(match.sharedTokens || []).join(" / ")}</small>
-          </p>
-        ))}
-        {(!similarity.matches || similarity.matches.length === 0) && <p className="muted-note">暂无可比较版本。</p>}
-      </div>
-    </div>
-  );
-}
-
-export function StoryboardPanel({ version }) {
-  const storyboards = version?.storyboards || [];
-  return (
-    <div className="storyboard-panel">
-      {storyboards.map((board) => (
-        <article key={`${board.episodeNumber}-${board.title}`}>
-          <div className="storyboard-head">
-            <MonitorPlay size={16} />
-            <b>第 {board.episodeNumber} 集</b>
-            <span>{board.title}</span>
-          </div>
-          {(board.shots || []).map((shot) => (
-            <div className="shot-row" key={`${board.episodeNumber}-${shot.time}`}>
-              <strong>{shot.time}</strong>
-              <p>{shot.frame}</p>
-              <small>{shot.camera} · {shot.sound} · {shot.prop}</small>
-            </div>
-          ))}
-        </article>
-      ))}
-      {storyboards.length === 0 && <p className="muted-note">生成或改写版本后会自动补充分镜建议。</p>}
-    </div>
-  );
-}
-
 export function InteractivePanel({ project, activeVersion, onCreateInteractiveExperience }) {
   const [draft, setDraft] = useState({ mood: "想看主角翻盘", persona: "下班后刷剧的女性观众" });
   const experiences = project?.interactiveExperiences || [];
@@ -1294,11 +1183,6 @@ export function VideoSamplePanel({ project, activeVersion, canEdit = true }) {
   const [realVideoOptions, setRealVideoOptions] = useState({
     ratio: "9:16",
     duration: REAL_VIDEO_TEST_DURATION_SECONDS,
-    generateAudio: true,
-    firstFrameImageUrl: "",
-    endFrameImageUrl: "",
-    referenceVideoUrl: "",
-    referenceAudioUrl: "",
   });
   const scriptVideoSample = buildScriptVideoFallback({ project, version: activeVersion, ratio: realVideoOptions.ratio });
   const realVideoSample = scriptVideoSample;
@@ -1379,13 +1263,7 @@ export function VideoSamplePanel({ project, activeVersion, canEdit = true }) {
         shot: activeShot,
         duration: REAL_VIDEO_TEST_DURATION_SECONDS,
         ratio: realVideoOptions.ratio,
-        generateAudio: realVideoOptions.generateAudio,
-        references: {
-          firstFrameImageUrl: realVideoOptions.firstFrameImageUrl,
-          endFrameImageUrl: realVideoOptions.endFrameImageUrl,
-          videoUrl: realVideoOptions.referenceVideoUrl,
-          audioUrl: realVideoOptions.referenceAudioUrl,
-        },
+        generateAudio: true,
       });
       setRealVideoTask(data.task);
       if (data.task?.errorHint || data.task?.error) setRealVideoError(data.task.errorHint || data.task.error);
@@ -1435,34 +1313,6 @@ export function VideoSamplePanel({ project, activeVersion, canEdit = true }) {
                     onChange={() => {}}
                   />
                 </label>
-                <label className="checkbox-line">
-                  <input
-                    checked={realVideoOptions.generateAudio}
-                    type="checkbox"
-                    onChange={(event) => setRealVideoOptions((current) => ({ ...current, generateAudio: event.target.checked }))}
-                  />
-                  生成音频
-                </label>
-                <input
-                  placeholder="首帧参考图 URL"
-                  value={realVideoOptions.firstFrameImageUrl}
-                  onChange={(event) => setRealVideoOptions((current) => ({ ...current, firstFrameImageUrl: event.target.value }))}
-                />
-                <input
-                  placeholder="尾帧参考图 URL"
-                  value={realVideoOptions.endFrameImageUrl}
-                  onChange={(event) => setRealVideoOptions((current) => ({ ...current, endFrameImageUrl: event.target.value }))}
-                />
-                <input
-                  placeholder="参考视频 URL"
-                  value={realVideoOptions.referenceVideoUrl}
-                  onChange={(event) => setRealVideoOptions((current) => ({ ...current, referenceVideoUrl: event.target.value }))}
-                />
-                <input
-                  placeholder="参考音频 URL"
-                  value={realVideoOptions.referenceAudioUrl}
-                  onChange={(event) => setRealVideoOptions((current) => ({ ...current, referenceAudioUrl: event.target.value }))}
-                />
               </div>
             )}
             {realVideoTask && (
@@ -1579,12 +1429,10 @@ export function VideoSamplePanel({ project, activeVersion, canEdit = true }) {
 export function ApiHandoffPanel({
   activeProject,
   healthState,
-  migrationPlan,
   apiTokenState,
   canManageTokens,
   onCreateApiToken,
   onRevokeApiToken,
-  onDownloadPostgresExport,
 }) {
   const [tokenName, setTokenName] = useState("制作流程 Token");
   const projectId = activeProject?.id || "project_id";
@@ -1595,7 +1443,7 @@ export function ApiHandoffPanel({
   const campaignWebhook = `${baseUrl}/api/public/projects/${projectId}/campaign-results`;
   return (
     <div className="api-handoff-panel">
-      <div className="compliance-grid">
+      <div className="api-metric-grid">
         <div>
           <KeyRound size={17} />
           <span>Public API</span>
@@ -1673,18 +1521,6 @@ export function ApiHandoffPanel({
         ))}
         {(!apiTokenState?.tokens || apiTokenState.tokens.length === 0) && <p className="muted-note">还没有团队 API Token。</p>}
       </div>
-      <div className="migration-card">
-        <FileText size={16} />
-        <div>
-          <b>PostgreSQL SQL 迁移包</b>
-          <span>{migrationPlan?.readyForMultiInstance ? "目标数据库已配置" : "可先导出 SQL 包离线校验"}</span>
-          <small>包含当前团队项目、版本、模板、投流、AI 日志和审计记录。</small>
-        </div>
-      </div>
-      <button className="secondary-action strong" type="button" onClick={onDownloadPostgresExport}>
-        <Download size={15} />
-        下载 PostgreSQL SQL
-      </button>
     </div>
   );
 }
@@ -1944,7 +1780,7 @@ function formatOptionalDate(value) {
   return value ? formatDate(value) : "暂无";
 }
 
-export function OpsPanel({ storageStatus, aiLogState, analyticsState, exportWorkspaceBackup, importWorkspaceBackup, backupInputRef }) {
+export function OpsPanel({ storageStatus, aiLogState, analyticsState }) {
   const totals = aiLogState.totals || { count: 0, success: 0, tokens: 0, costUsd: 0 };
   const analyticsTotals = analyticsState?.totals || { pageViews: 0, uniqueVisitors: 0 };
   const landingStats = analyticsState?.pages?.landing || { pageViews: 0, uniqueVisitors: 0, lastVisitedAt: null };
@@ -1990,23 +1826,6 @@ export function OpsPanel({ storageStatus, aiLogState, analyticsState, exportWork
           </p>
         ))}
         {(!aiLogState.logs || aiLogState.logs.length === 0) && <p>暂无 AI 调用日志。</p>}
-      </div>
-      <div className="backup-actions">
-        <button className="secondary-action" type="button" onClick={exportWorkspaceBackup}>
-          <Download size={15} />
-          导出工作区
-        </button>
-        <button className="secondary-action" type="button" onClick={() => backupInputRef.current?.click()}>
-          <Archive size={15} />
-          恢复备份
-        </button>
-        <input
-          ref={backupInputRef}
-          type="file"
-          accept="application/json"
-          hidden
-          onChange={(event) => importWorkspaceBackup(event.target.files?.[0])}
-        />
       </div>
     </div>
   );

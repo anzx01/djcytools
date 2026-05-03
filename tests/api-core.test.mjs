@@ -344,6 +344,19 @@ test("script generation uses DeepSeek while video samples and real video use Ark
     assert.equal(generatedVideoList[0].taskId, "task_1");
     assert.equal(generatedVideoList[0].localVideoUrl, "/api/generated-videos/task_1.mp4");
 
+    const showcaseVideos = await request(rootDir, {
+      url: "/api/showcase/generated-videos",
+    }, routeEnv);
+    assert.equal(showcaseVideos.statusCode, 200);
+    const showcaseVideoList = JSON.parse(showcaseVideos.body).videos;
+    assert.equal(showcaseVideoList[0].taskId, "task_1");
+    assert.equal(showcaseVideoList[0].localVideoUrl, "/api/showcase/generated-videos/task_1.mp4");
+
+    const showcaseVideoFile = await request(rootDir, {
+      url: "/api/showcase/generated-videos/task_1.mp4",
+    }, routeEnv);
+    assert.equal(showcaseVideoFile.statusCode, 200);
+
     const failedRealVideoStatus = await request(rootDir, {
       url: "/api/real-video/tasks/failed_task",
       headers: { cookie },
@@ -382,7 +395,8 @@ test("script generation uses DeepSeek while video samples and real video use Ark
     assert.equal(calls[2].headers.Authorization, "Bearer ark-test-key");
     assert.equal(calls[3].url, "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks/task_1");
     assert.equal(calls[4].url, "https://example.test/video.mp4");
-    assert.equal(calls[5].url, "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks/failed_task");
+    assert.ok(calls.some((call) => call.url === "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks?page_num=1&page_size=30"));
+    assert.ok(calls.some((call) => call.url === "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks/failed_task"));
   } finally {
     globalThis.fetch = originalFetch;
     closeDatabase(rootDir);
