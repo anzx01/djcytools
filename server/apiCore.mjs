@@ -56,13 +56,8 @@ const DEFAULT_SCRIPT_AI_MAX_TOKENS = 8_000;
 const DEFAULT_SCRIPT_AI_MODEL = "deepseek-chat";
 const DEFAULT_SCRIPT_AI_PROVIDER = "DeepSeek";
 const DEFAULT_SCRIPT_AI_BASE_URL = "https://api.deepseek.com";
-const DEFAULT_VIDEO_AI_TIMEOUT_MS = 90_000;
-const DEFAULT_VIDEO_SAMPLE_SECONDS = 15;
+const DEFAULT_REAL_VIDEO_TIMEOUT_MS = 90_000;
 const SEEDANCE_2_MAX_DURATION_SECONDS = 15;
-const DEFAULT_VIDEO_AI_MODEL = "doubao-seed-2-0-mini-260215";
-const DEFAULT_VIDEO_AI_PROVIDER = "Doubao-Seed-2.0";
-const DEFAULT_VIDEO_AI_RESPONSES_URL = "https://ark.cn-beijing.volces.com/api/v3/responses";
-const DEFAULT_VIDEO_AI_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3";
 const DEFAULT_REAL_VIDEO_MODEL = "doubao-seedance-2-0-260128";
 const DEFAULT_REAL_VIDEO_PROVIDER = "Doubao-Seedance-2.0";
 const DEFAULT_REAL_VIDEO_TASKS_URL = "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks";
@@ -1015,26 +1010,13 @@ function getScriptAiProviderConfig(env = {}) {
   };
 }
 
-function getVideoAiProviderConfig(env = {}) {
-  const endpoint = env.DJCYTOOLS_VIDEO_ENDPOINT || env.DOUBAO_RESPONSES_URL || env.ARK_RESPONSES_URL || env.DJCYTOOLS_AI_ENDPOINT || "";
-  return {
-    apiKey: env.DJCYTOOLS_VIDEO_API_KEY || env.DOUBAO_API_KEY || env.ARK_API_KEY || env.DJCYTOOLS_AI_API_KEY || "",
-    baseUrl: env.DJCYTOOLS_VIDEO_BASE_URL || env.DOUBAO_BASE_URL || env.ARK_BASE_URL || env.DJCYTOOLS_AI_BASE_URL || DEFAULT_VIDEO_AI_BASE_URL,
-    endpoint: endpoint || DEFAULT_VIDEO_AI_RESPONSES_URL,
-    model: env.DJCYTOOLS_VIDEO_MODEL || env.DOUBAO_MODEL || env.ARK_MODEL || env.DJCYTOOLS_AI_MODEL || DEFAULT_VIDEO_AI_MODEL,
-    providerName: env.DJCYTOOLS_VIDEO_PROVIDER || env.DOUBAO_PROVIDER || env.ARK_PROVIDER || DEFAULT_VIDEO_AI_PROVIDER,
-    protocol: "responses",
-    timeoutMs: Number(env.DJCYTOOLS_VIDEO_TIMEOUT_MS || env.DOUBAO_TIMEOUT_MS || env.ARK_TIMEOUT_MS || DEFAULT_VIDEO_AI_TIMEOUT_MS),
-  };
-}
-
 function getRealVideoProviderConfig(env = {}) {
   return {
-    apiKey: env.DJCYTOOLS_REAL_VIDEO_API_KEY || env.DJCYTOOLS_VIDEO_API_KEY || env.DOUBAO_API_KEY || env.ARK_API_KEY || env.DJCYTOOLS_AI_API_KEY || "",
+    apiKey: env.DJCYTOOLS_REAL_VIDEO_API_KEY || env.DOUBAO_API_KEY || env.ARK_API_KEY || env.DJCYTOOLS_AI_API_KEY || "",
     endpoint: env.DJCYTOOLS_REAL_VIDEO_ENDPOINT || env.ARK_VIDEO_TASKS_URL || DEFAULT_REAL_VIDEO_TASKS_URL,
     model: env.DJCYTOOLS_REAL_VIDEO_MODEL || env.SEEDANCE_MODEL || DEFAULT_REAL_VIDEO_MODEL,
     providerName: env.DJCYTOOLS_REAL_VIDEO_PROVIDER || DEFAULT_REAL_VIDEO_PROVIDER,
-    timeoutMs: Number(env.DJCYTOOLS_REAL_VIDEO_TIMEOUT_MS || env.DJCYTOOLS_VIDEO_TIMEOUT_MS || DEFAULT_VIDEO_AI_TIMEOUT_MS),
+    timeoutMs: Number(env.DJCYTOOLS_REAL_VIDEO_TIMEOUT_MS || DEFAULT_REAL_VIDEO_TIMEOUT_MS),
   };
 }
 
@@ -1043,17 +1025,6 @@ function chatCompletionsUrl(config = {}) {
   if (endpoint) return endpoint;
   const trimmed = String(config.baseUrl || DEFAULT_SCRIPT_AI_BASE_URL).replace(/\/$/, "");
   return trimmed.endsWith("/chat/completions") ? trimmed : `${trimmed}/chat/completions`;
-}
-
-function responsesUrl(config = {}) {
-  const endpoint = String(config.endpoint || "").trim();
-  if (endpoint) return endpoint;
-  const base = String(config.baseUrl || DEFAULT_VIDEO_AI_BASE_URL).replace(/\/$/, "");
-  return base.endsWith("/responses") ? base : `${base}/responses`;
-}
-
-function aiEndpointUrl(config = {}) {
-  return config.protocol === "chat_completions" ? chatCompletionsUrl(config) : responsesUrl(config);
 }
 
 function buildAiRequestBody(config, prompt, options = {}) {
@@ -1344,7 +1315,7 @@ async function fetchAiJsonContent({ aiConfig, prompt, repairContent = "" }) {
   const timeout = setTimeout(() => controller.abort(), aiConfig.timeoutMs);
   const requestPrompt = repairContent ? buildJsonRepairPrompt({ originalPrompt: prompt, invalidContent: repairContent }) : prompt;
   try {
-    const response = await fetch(aiEndpointUrl(aiConfig), {
+    const response = await fetch(chatCompletionsUrl(aiConfig), {
       method: "POST",
       signal: controller.signal,
       headers: {
@@ -1497,64 +1468,6 @@ function buildPrompt({ brief, params, template, market, instruction, currentVers
     `禁忌内容：${brief?.forbidden || ""}`,
     `参数：${JSON.stringify(params || {})}`,
   ].join("\n");
-}
-
-function buildVideoSamplePrompt({ project = {}, version = {}, draftSample = {} }) {
-  const compactInput = {
-    project: {
-      id: project.id,
-      name: project.name,
-      brief: project.brief,
-    },
-    version: {
-      id: version.id,
-      name: version.name,
-      selectedTitle: version.selectedTitle,
-      logline: version.logline,
-      marketName: version.marketName,
-      templateName: version.templateName,
-      characters: version.characters,
-      episodes: version.episodes,
-      storyboards: version.storyboards,
-      adHooks: version.adHooks,
-    },
-    draftSample: {
-      format: draftSample.format,
-      targetDuration: draftSample.targetDuration,
-      style: draftSample.style,
-      voice: draftSample.voice,
-      shots: (draftSample.shots || []).slice(0, 14),
-    },
-  };
-
-  return [
-    "你是短剧出海制作团队的视频导演、分镜师和投流素材剪辑策划。",
-    `请基于已完成的短剧剧本，生成 ${DEFAULT_VIDEO_SAMPLE_SECONDS} 秒 9:16 竖屏短剧样片镜头包。这里的“生成视频”先输出可交给渲染器/剪辑师执行的结构化制作包，不要输出 Markdown。`,
-    "必须只输出严格 JSON，字段：name,status,format,style,voice,targetDuration,duration,logline,shots。",
-    "shots 每项字段：position,episodeNumber,episodeTitle,start,end,duration,title,frame,camera,sound,prop,subtitle,voiceover,visualPrompt,assetStatus。",
-    `要求：总时长接近 ${DEFAULT_VIDEO_SAMPLE_SECONDS} 秒；每个镜头 3-8 秒；字幕不超过 42 个中文字；visualPrompt 用英文描述竖屏短剧画面，包含人物、场景、镜头、光线和 mobile-first framing；assetStatus 固定为 prompt_ready。`,
-    "风格：高密度、可拍、强钩子、前 5 秒有冲突，避免违法、仇恨、露骨暴力和未成年人伤害。",
-    `输入：${JSON.stringify(compactInput)}`,
-  ].join("\n");
-}
-
-function buildVideoSampleRequestBody(config, prompt) {
-  return {
-    model: config.model,
-    temperature: 0.72,
-    max_output_tokens: 4200,
-    input: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "input_text",
-            text: prompt,
-          },
-        ],
-      },
-    ],
-  };
 }
 
 function clampVideoDuration(value) {
@@ -2189,128 +2102,6 @@ async function handleGenerateScript({ req, res, env, rootDir, session }) {
   }
 }
 
-async function handleGenerateVideoSample({ req, res, env, rootDir, session }) {
-  const aiConfig = getVideoAiProviderConfig(env);
-  if (!aiConfig.apiKey) {
-    sendJson(res, 500, { error: "DJCYTOOLS_VIDEO_API_KEY or ARK_API_KEY is not configured", code: "VIDEO_AI_KEY_MISSING" });
-    return true;
-  }
-
-  const startedAt = Date.now();
-  const body = await readRequestBody(req, {
-    maxBytes: Number(env.DJCYTOOLS_MAX_BODY_BYTES || DEFAULT_MAX_BODY_BYTES),
-    timeoutMs: Number(env.DJCYTOOLS_REQUEST_TIMEOUT_MS || DEFAULT_REQUEST_TIMEOUT_MS),
-  });
-  const prompt = buildVideoSamplePrompt(body);
-  const model = aiConfig.model;
-  const requestId = `video_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), aiConfig.timeoutMs);
-
-  try {
-    const response = await fetch(aiEndpointUrl(aiConfig), {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${aiConfig.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(buildVideoSampleRequestBody(aiConfig, prompt)),
-    });
-    clearTimeout(timeout);
-
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      await appendAiLog(rootDir, {
-        id: requestId,
-        status: "error",
-        model,
-        instruction: "video_sample",
-        error: data?.error?.message || `${aiConfig.providerName} video sample request failed`,
-        durationMs: Date.now() - startedAt,
-        createdAt: new Date().toISOString(),
-      }, env, session);
-      sendJson(res, response.status, {
-        error: data?.error?.message || `${aiConfig.providerName} video sample request failed`,
-        code: "VIDEO_AI_PROVIDER_ERROR",
-        requestId,
-        detail: data,
-      });
-      return true;
-    }
-
-    const content = extractAiText(data);
-    if (!content) {
-      sendJson(res, 502, { error: `${aiConfig.providerName} returned empty video sample content`, code: "VIDEO_AI_EMPTY_CONTENT", requestId, detail: data });
-      return true;
-    }
-
-    let parsedContent;
-    try {
-      parsedContent = parseAiJsonContent(content);
-    } catch {
-      await appendAiLog(rootDir, {
-        id: requestId,
-        status: "error",
-        model: data.model || model,
-        instruction: "video_sample",
-        error: `${aiConfig.providerName} returned non-JSON video sample content`,
-        durationMs: Date.now() - startedAt,
-        createdAt: new Date().toISOString(),
-      }, env, session);
-      sendJson(res, 502, {
-        error: `${aiConfig.providerName} 返回的视频样片不是合法 JSON，已触发前端本地镜头包兜底。`,
-        code: "VIDEO_AI_INVALID_JSON",
-        requestId,
-      });
-      return true;
-    }
-
-    const usage = data.usage || {};
-    const costUsd = estimateCost(usage);
-    await appendAiLog(rootDir, {
-      id: requestId,
-      status: "success",
-      model: data.model || model,
-      instruction: "video_sample",
-      market: body.version?.marketName || body.project?.brief?.market,
-      template: body.version?.templateName || body.project?.brief?.templateId,
-      usage,
-      costUsd,
-      durationMs: Date.now() - startedAt,
-      createdAt: new Date().toISOString(),
-    }, env, session);
-
-    sendJson(res, 200, {
-      requestId,
-      content: parsedContent,
-      usage,
-      model: data.model || model,
-      provider: aiConfig.providerName,
-      costUsd,
-    });
-    return true;
-  } catch (error) {
-    clearTimeout(timeout);
-    await appendAiLog(rootDir, {
-      id: requestId,
-      status: "error",
-      model,
-      instruction: "video_sample",
-      error: error instanceof Error ? error.message : `Unknown ${aiConfig.providerName} video sample API error`,
-      durationMs: Date.now() - startedAt,
-      createdAt: new Date().toISOString(),
-    }, env, session);
-    const isAbort = error?.name === "AbortError";
-    sendJson(res, isAbort ? 504 : 500, {
-      error: isAbort ? `${aiConfig.providerName} 视频样片请求超时，请稍后重试。` : error instanceof Error ? error.message : `Unknown ${aiConfig.providerName} video sample API error`,
-      code: isAbort ? "VIDEO_AI_TIMEOUT" : "VIDEO_AI_REQUEST_FAILED",
-      requestId,
-    });
-    return true;
-  }
-}
-
 async function handleCreateRealVideoTask({ req, res, env, rootDir, session }) {
   const config = getRealVideoProviderConfig(env);
   if (!config.apiKey) {
@@ -2529,7 +2320,6 @@ export async function handleApiRequest({ req, res, env, rootDir = process.cwd() 
 
   if (pathname === "/api/health" && req.method === "GET") {
     const scriptAiConfig = getScriptAiProviderConfig(env);
-    const videoAiConfig = getVideoAiProviderConfig(env);
     const realVideoConfig = getRealVideoProviderConfig(env);
     sendJson(res, 200, {
       ok: true,
@@ -2541,9 +2331,6 @@ export async function handleApiRequest({ req, res, env, rootDir = process.cwd() 
       scriptAiConfigured: Boolean(scriptAiConfig.apiKey),
       scriptModel: scriptAiConfig.model,
       scriptAiProvider: scriptAiConfig.providerName,
-      videoAiConfigured: Boolean(videoAiConfig.apiKey),
-      videoModel: videoAiConfig.model,
-      videoAiProvider: videoAiConfig.providerName,
       realVideoConfigured: Boolean(realVideoConfig.apiKey),
       realVideoModel: realVideoConfig.model,
       realVideoProvider: realVideoConfig.providerName,
@@ -2923,13 +2710,6 @@ export async function handleApiRequest({ req, res, env, rootDir = process.cwd() 
     if (!ensureRole(res, session, "editor")) return true;
     const handled = await handleGenerateScript({ req, res, env, rootDir, session });
     appendAudit(rootDir, env, session, "ai.generate_script", { targetType: "ai_request" });
-    return handled;
-  }
-
-  if (pathname === "/api/generate-video-sample" && req.method === "POST") {
-    if (!ensureRole(res, session, "editor")) return true;
-    const handled = await handleGenerateVideoSample({ req, res, env, rootDir, session });
-    appendAudit(rootDir, env, session, "ai.generate_video_sample", { targetType: "ai_request" });
     return handled;
   }
 

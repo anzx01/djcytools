@@ -2,9 +2,9 @@
 
 DJCYTools 是一个面向一人公司的本地全栈短视频生成工作台。它把 AI 剧本生成、120 个短剧模板、结构化剧本编辑、AI 真实视频生成、首页视频轮播、SQLite 持久化和 PostgreSQL 迁移脚本放在同一条生产线上。
 
-![DJCYTools 工作台](image/README/1777768684633.png)
+![1777858451125](image/README/1777858451125.png)
 
-![DJCYTools 首页视频轮播](image/README/1777768712335.png)
+![1777858496102](image/README/1777858496102.png)
 
 ## 当前入口
 
@@ -65,13 +65,6 @@ DJCYTOOLS_REAL_VIDEO_PROVIDER=AI
 DJCYTOOLS_REAL_VIDEO_ENDPOINT=https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks
 DJCYTOOLS_REAL_VIDEO_MODEL=doubao-seedance-2-0-260128
 DJCYTOOLS_REAL_VIDEO_TIMEOUT_MS=90000
-
-# 可选镜头包接口：保留 legacy，不作为真实视频结果
-DJCYTOOLS_VIDEO_API_KEY=your_volcengine_ark_api_key
-DJCYTOOLS_VIDEO_PROVIDER=AI
-DJCYTOOLS_VIDEO_ENDPOINT=https://ark.cn-beijing.volces.com/api/v3/responses
-DJCYTOOLS_VIDEO_MODEL=doubao-seed-2-0-mini-260215
-DJCYTOOLS_VIDEO_TIMEOUT_MS=90000
 
 # 本地账号和服务
 DJCYTOOLS_ADMIN_EMAIL=admin@djcytools.local

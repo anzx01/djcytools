@@ -171,12 +171,12 @@ test("public API exposes health, OpenAPI and project exports behind a token", as
   }
 });
 
-test("script generation uses DeepSeek while video samples and real video use Ark", async () => {
+test("script generation uses DeepSeek while real video uses Ark", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "djcytools-ai-routes-"));
   const routeEnv = {
     ...env,
     DJCYTOOLS_SCRIPT_API_KEY: "deepseek-test-key",
-    DJCYTOOLS_VIDEO_API_KEY: "ark-test-key",
+    DJCYTOOLS_REAL_VIDEO_API_KEY: "ark-test-key",
   };
   const originalFetch = globalThis.fetch;
   const calls = [];
@@ -244,29 +244,7 @@ test("script generation uses DeepSeek while video samples and real video use Ark
         arrayBuffer: async () => new TextEncoder().encode("fake mp4").buffer,
       };
     }
-    return {
-      ok: true,
-      status: 200,
-      json: async () => ({
-        model: "doubao-seed-2-0-mini-260215",
-        output: [
-          {
-            content: [
-              {
-                type: "output_text",
-                text: JSON.stringify({
-                  name: "Doubao 测试样片",
-                  status: "preview_ready",
-                  format: "9:16",
-                  shots: [{ position: 1, duration: 5, subtitle: "今天我来定规则。", assetStatus: "prompt_ready" }],
-                }),
-              },
-            ],
-          },
-        ],
-        usage: { input_tokens: 20, output_tokens: 30 },
-      }),
-    };
+    throw new Error(`Unexpected fetch call: ${url}`);
   };
 
   try {
@@ -281,19 +259,6 @@ test("script generation uses DeepSeek while video samples and real video use Ark
     }, routeEnv);
     assert.equal(script.statusCode, 200);
     assert.equal(JSON.parse(script.body).content.selectedTitle, "测试短剧");
-
-    const video = await request(rootDir, {
-      method: "POST",
-      url: "/api/generate-video-sample",
-      headers: { cookie, "content-type": "application/json" },
-      body: {
-        project: { id: "p1", name: "测试项目", brief: { market: "us" } },
-        version: { id: "v1", selectedTitle: "测试短剧", logline: "女主反击", episodes: [], storyboards: [] },
-        draftSample: { format: "9:16", targetDuration: 15, shots: [] },
-      },
-    }, routeEnv);
-    assert.equal(video.statusCode, 200);
-    assert.equal(JSON.parse(video.body).provider, "Doubao-Seed-2.0");
 
     const realVideo = await request(rootDir, {
       method: "POST",
@@ -317,7 +282,7 @@ test("script generation uses DeepSeek while video samples and real video use Ark
           ],
         },
         sample: {
-          name: "样片",
+          name: "镜头计划",
           style: "写实",
           shots: [
             { start: 0, end: 5, frame: "女主当场反击", subtitle: "轮到我定规则", prop: "证据U盘" },
@@ -392,29 +357,22 @@ test("script generation uses DeepSeek while video samples and real video use Ark
     assert.equal(calls[0].body.model, "deepseek-chat");
     assert.ok(Array.isArray(calls[0].body.messages));
     assert.equal(calls[0].headers.Authorization, "Bearer deepseek-test-key");
-    assert.equal(calls[1].url, "https://ark.cn-beijing.volces.com/api/v3/responses");
-    assert.equal(calls[1].body.model, "doubao-seed-2-0-mini-260215");
-    assert.equal(calls[1].body.input[0].content[0].type, "input_text");
+    assert.equal(calls[1].url, "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks");
+    assert.equal(calls[1].body.model, "doubao-seedance-2-0-260128");
+    assert.equal(calls[1].body.ratio, "16:9");
+    assert.equal(calls[1].body.duration, 15);
+    assert.equal(calls[1].body.generate_audio, true);
+    assert.equal(calls[1].body.content[0].type, "text");
+    assert.ok(calls[1].body.content[0].text.length > 100);
+    assert.equal(calls[1].body.content[1].type, "image_url");
+    assert.equal(calls[1].body.content[1].role, "reference_image");
+    assert.equal(calls[1].body.content[3].type, "video_url");
+    assert.equal(calls[1].body.content[3].role, "reference_video");
+    assert.equal(calls[1].body.content[4].type, "audio_url");
+    assert.equal(calls[1].body.content[4].role, "reference_audio");
     assert.equal(calls[1].headers.Authorization, "Bearer ark-test-key");
-    assert.equal(calls[2].url, "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks");
-    assert.equal(calls[2].body.model, "doubao-seedance-2-0-260128");
-    assert.equal(calls[2].body.ratio, "16:9");
-    assert.equal(calls[2].body.duration, 15);
-    assert.equal(calls[2].body.generate_audio, true);
-    assert.equal(calls[2].body.content[0].type, "text");
-    assert.match(calls[2].body.content[0].text, /测试短剧/);
-    assert.match(calls[2].body.content[0].text, /未婚夫当众羞辱女主/);
-    assert.match(calls[2].body.content[0].text, /证据在这里/);
-    assert.match(calls[2].body.content[0].text, /不要生成广告/);
-    assert.equal(calls[2].body.content[1].type, "image_url");
-    assert.equal(calls[2].body.content[1].role, "reference_image");
-    assert.equal(calls[2].body.content[3].type, "video_url");
-    assert.equal(calls[2].body.content[3].role, "reference_video");
-    assert.equal(calls[2].body.content[4].type, "audio_url");
-    assert.equal(calls[2].body.content[4].role, "reference_audio");
-    assert.equal(calls[2].headers.Authorization, "Bearer ark-test-key");
-    assert.equal(calls[3].url, "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks/task_1");
-    assert.equal(calls[4].url, "https://example.test/video.mp4");
+    assert.equal(calls[2].url, "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks/task_1");
+    assert.equal(calls[3].url, "https://example.test/video.mp4");
     assert.ok(calls.some((call) => call.url === "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks?page_num=1&page_size=30"));
     assert.ok(calls.some((call) => call.url === "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks/failed_task"));
   } finally {

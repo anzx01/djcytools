@@ -10,15 +10,6 @@ import {
   rewriteVersion,
   scoreScript,
 } from "../src/lib/generator.js";
-import {
-  buildVideoRenderManifest,
-  buildVideoSampleProductionPack,
-  buildVideoSampleSrt,
-  buildVideoSampleVoiceover,
-  createVideoSample,
-  normalizeVideoSamplePayload,
-} from "../src/lib/videoSample.js";
-import { buildVideoPreviewPlan, getVideoPreviewShotAtTime } from "../src/lib/videoRenderer.js";
 
 test("createProject generates a scored editable short drama project", () => {
   const project = createProject({
@@ -87,78 +78,4 @@ test("interactive experience creates C-side choice points", () => {
   assert.equal(experience.persona, "测试观众");
   assert.ok(experience.choices.length >= 1);
   assert.equal(experience.choices[0].options.length, 3);
-});
-
-test("video sample creates a 9:16 shot package with SRT export", () => {
-  const project = createProject({ brief: defaultBrief, params: templates[0].defaultParams });
-  const sample = createVideoSample({ project, version: project.versions[0] });
-  const srt = buildVideoSampleSrt(sample);
-
-  assert.equal(sample.format, "9:16");
-  assert.ok(sample.duration > 0);
-  assert.ok(sample.duration <= 96);
-  assert.ok(sample.shots.length >= 1);
-  assert.equal(sample.outputs.srt, "ready");
-  assert.match(srt, /00:00:00,000 --> 00:00:/);
-});
-
-test("Doubao video sample payload is normalized against local fallback", () => {
-  const project = createProject({ brief: defaultBrief, params: templates[0].defaultParams });
-  const version = project.versions[0];
-  const fallback = createVideoSample({ project, version });
-  const sample = normalizeVideoSamplePayload({
-    project,
-    version,
-    fallback,
-    meta: { provider: "Doubao-Seed-2.0", model: "doubao-seed-2-0-mini-260215", requestId: "video_1" },
-    payload: {
-      name: "Doubao 样片",
-      shots: [
-        {
-          duration: 5,
-          frame: "女主看到收购合同，决定当场反击。",
-          subtitle: "今天开始，轮到我定规则。",
-          visualPrompt: "9:16 vertical short drama, office confrontation, cinematic light",
-        },
-      ],
-    },
-  });
-
-  assert.equal(sample.source, "Doubao-Seed-2.0");
-  assert.equal(sample.model, "doubao-seed-2-0-mini-260215");
-  assert.equal(sample.requestId, "video_1");
-  assert.equal(sample.shots[0].assetStatus, "prompt_ready");
-  assert.equal(sample.shots[0].start, 0);
-  assert.equal(sample.shots[0].end, 5);
-});
-
-test("video sample exports voiceover, production pack and render manifest", () => {
-  const project = createProject({ brief: defaultBrief, params: templates[0].defaultParams });
-  const sample = createVideoSample({ project, version: project.versions[0] });
-  const voiceover = buildVideoSampleVoiceover(sample);
-  const productionPack = buildVideoSampleProductionPack(sample);
-  const manifest = buildVideoRenderManifest(sample);
-
-  assert.match(voiceover, /配音稿/);
-  assert.match(productionPack, /DJCYTools Video Production Pack/);
-  assert.equal(manifest.schemaVersion, "djcytools.video-render.v1");
-  assert.equal(manifest.canvas.width, 1080);
-  assert.equal(manifest.canvas.height, 1920);
-  assert.equal(manifest.tracks.some((track) => track.id === "visual"), true);
-  assert.equal(manifest.deliverables.productionPack, "ready");
-  assert.equal(manifest.deliverables.webmPreview, "browser_canvas_ready");
-});
-
-test("browser video preview plan maps timeline time to shots", () => {
-  const project = createProject({ brief: defaultBrief, params: templates[0].defaultParams });
-  const sample = createVideoSample({ project, version: project.versions[0] });
-  const plan = buildVideoPreviewPlan(sample, { maxPreviewSeconds: 12 });
-  const first = getVideoPreviewShotAtTime(sample, 0);
-  const second = getVideoPreviewShotAtTime(sample, sample.shots[1]?.start || 1);
-
-  assert.equal(plan.width, 540);
-  assert.equal(plan.height, 960);
-  assert.ok(plan.previewDurationSeconds <= 12);
-  assert.equal(first.index, 0);
-  assert.ok(second.index >= 0);
 });
