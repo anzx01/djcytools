@@ -82,6 +82,29 @@ function createWebhookRecorder() {
   });
 }
 
+function createScriptPayload(overrides = {}) {
+  return {
+    titleCandidates: ["测试短剧"],
+    selectedTitle: "测试短剧",
+    logline: "女主被误解后反击。",
+    sellingPoints: ["强冲突"],
+    characters: [],
+    outline: [],
+    episodes: [],
+    adHooks: [],
+    ...overrides,
+  };
+}
+
+function createGenerateScriptBody() {
+  return {
+    brief: { market: "us", templateId: "test", episodeCount: 24, painPoint: "被误解", audience: "短剧观众" },
+    params: {},
+    template: { name: "测试模板", beat: "误会后反击" },
+    market: { label: "美国", pacing: "快节奏" },
+  };
+}
+
 test("public API exposes health, OpenAPI and project exports behind a token", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "djcytools-api-"));
   try {
@@ -170,14 +193,7 @@ test("script generation uses DeepSeek while video samples and real video use Ark
             {
               message: {
                 content: JSON.stringify({
-                  titleCandidates: ["测试短剧"],
-                  selectedTitle: "测试短剧",
-                  logline: "女主被误解后反击。",
-                  sellingPoints: ["强冲突"],
-                  characters: [],
-                  outline: [],
-                  episodes: [],
-                  adHooks: [],
+                  ...createScriptPayload(),
                 }),
               },
             },
@@ -261,12 +277,7 @@ test("script generation uses DeepSeek while video samples and real video use Ark
       method: "POST",
       url: "/api/generate-script",
       headers: { cookie, "content-type": "application/json" },
-      body: {
-        brief: { market: "us", templateId: "test", episodeCount: 24, painPoint: "被误解", audience: "短剧观众" },
-        params: {},
-        template: { name: "测试模板", beat: "误会后反击" },
-        market: { label: "美国", pacing: "快节奏" },
-      },
+      body: createGenerateScriptBody(),
     }, routeEnv);
     assert.equal(script.statusCode, 200);
     assert.equal(JSON.parse(script.body).content.selectedTitle, "测试短剧");
@@ -326,7 +337,10 @@ test("script generation uses DeepSeek while video samples and real video use Ark
       },
     }, routeEnv);
     assert.equal(realVideo.statusCode, 202);
-    assert.equal(JSON.parse(realVideo.body).task.id, "task_1");
+    const realVideoCreateBody = JSON.parse(realVideo.body);
+    assert.equal(realVideoCreateBody.task.id, "task_1");
+    assert.equal(realVideoCreateBody.task.generationTarget.scriptTitle, "测试短剧");
+    assert.equal(realVideoCreateBody.task.generationTarget.label, "第1集 婚礼反击 · 镜头 1");
 
     const realVideoStatus = await request(rootDir, {
       url: "/api/real-video/tasks/task_1",
@@ -335,6 +349,8 @@ test("script generation uses DeepSeek while video samples and real video use Ark
     const realVideoStatusBody = JSON.parse(realVideoStatus.body);
     assert.equal(realVideoStatusBody.task.videoUrl, "https://example.test/video.mp4");
     assert.equal(realVideoStatusBody.task.localVideoUrl, "/api/generated-videos/task_1.mp4");
+    assert.equal(realVideoStatusBody.task.title, "测试短剧 · 第1集 婚礼反击");
+    assert.equal(realVideoStatusBody.task.generationTarget.label, "第1集 婚礼反击 · 镜头 1");
 
     const generatedVideos = await request(rootDir, {
       url: "/api/generated-videos",
@@ -342,7 +358,9 @@ test("script generation uses DeepSeek while video samples and real video use Ark
     }, routeEnv);
     const generatedVideoList = JSON.parse(generatedVideos.body).videos;
     assert.equal(generatedVideoList[0].taskId, "task_1");
+    assert.equal(generatedVideoList[0].title, "测试短剧 · 第1集 婚礼反击");
     assert.equal(generatedVideoList[0].localVideoUrl, "/api/generated-videos/task_1.mp4");
+    assert.equal(generatedVideoList[0].generationTarget.label, "第1集 婚礼反击 · 镜头 1");
 
     const showcaseVideos = await request(rootDir, {
       url: "/api/showcase/generated-videos",
@@ -350,7 +368,9 @@ test("script generation uses DeepSeek while video samples and real video use Ark
     assert.equal(showcaseVideos.statusCode, 200);
     const showcaseVideoList = JSON.parse(showcaseVideos.body).videos;
     assert.equal(showcaseVideoList[0].taskId, "task_1");
+    assert.equal(showcaseVideoList[0].title, "测试短剧 · 第1集 婚礼反击");
     assert.equal(showcaseVideoList[0].localVideoUrl, "/api/showcase/generated-videos/task_1.mp4");
+    assert.equal(showcaseVideoList[0].generationTarget.label, "第1集 婚礼反击 · 镜头 1");
 
     const showcaseVideoFile = await request(rootDir, {
       url: "/api/showcase/generated-videos/task_1.mp4",
@@ -397,6 +417,174 @@ test("script generation uses DeepSeek while video samples and real video use Ark
     assert.equal(calls[4].url, "https://example.test/video.mp4");
     assert.ok(calls.some((call) => call.url === "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks?page_num=1&page_size=30"));
     assert.ok(calls.some((call) => call.url === "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks/failed_task"));
+  } finally {
+    globalThis.fetch = originalFetch;
+    closeDatabase(rootDir);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("script generation accepts fenced, wrapped and lightly malformed DeepSeek JSON", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "djcytools-ai-json-"));
+  const routeEnv = {
+    ...env,
+    DJCYTOOLS_SCRIPT_API_KEY: "deepseek-test-key",
+  };
+  const originalFetch = globalThis.fetch;
+  const responses = [
+    `这是结果：\n\`\`\`json\n${JSON.stringify(createScriptPayload({ selectedTitle: "代码块短剧" }), null, 2)}\n\`\`\`\n请查收。`,
+    JSON.stringify({ data: createScriptPayload({ selectedTitle: "包装短剧" }) }),
+    `json\n{
+      "titleCandidates": ["裸换行短剧"],
+      "selectedTitle": "裸换行短剧",
+      "logline": "第一行
+第二行",
+      "sellingPoints": ["强冲突",],
+      "characters": [],
+      "outline": [],
+      "episodes": [],
+      "adHooks": [],
+    }`,
+  ];
+  let fetchCount = 0;
+  globalThis.fetch = async () => {
+    const content = responses[fetchCount];
+    fetchCount += 1;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        model: "deepseek-chat",
+        choices: [{ message: { content } }],
+        usage: { prompt_tokens: 12, completion_tokens: 18 },
+      }),
+    };
+  };
+
+  try {
+    const session = createSession(rootDir, routeEnv, env.DJCYTOOLS_ADMIN_EMAIL, env.DJCYTOOLS_ADMIN_PASSWORD);
+    const cookie = `djcytools_session=${encodeURIComponent(session.token)}`;
+    const expectedTitles = ["代码块短剧", "包装短剧", "裸换行短剧"];
+
+    for (const expectedTitle of expectedTitles) {
+      const response = await request(rootDir, {
+        method: "POST",
+        url: "/api/generate-script",
+        headers: { cookie, "content-type": "application/json" },
+        body: createGenerateScriptBody(),
+      }, routeEnv);
+
+      assert.equal(response.statusCode, 200);
+      const body = JSON.parse(response.body);
+      assert.equal(body.content.selectedTitle, expectedTitle);
+    }
+
+    assert.equal(fetchCount, expectedTitles.length);
+  } finally {
+    globalThis.fetch = originalFetch;
+    closeDatabase(rootDir);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("script generation repairs invalid DeepSeek JSON before falling back", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "djcytools-ai-repair-"));
+  const routeEnv = {
+    ...env,
+    DJCYTOOLS_SCRIPT_API_KEY: "deepseek-test-key",
+  };
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    const body = options.body ? JSON.parse(options.body) : {};
+    calls.push({ url: String(url), body });
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        model: "deepseek-chat",
+        choices: [
+          {
+            message: {
+              content: calls.length === 1
+                ? '{"selectedTitle":"坏 JSON", "episodes": ['
+                : JSON.stringify(createScriptPayload({ selectedTitle: "修复后短剧" })),
+            },
+          },
+        ],
+        usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
+      }),
+    };
+  };
+
+  try {
+    const session = createSession(rootDir, routeEnv, env.DJCYTOOLS_ADMIN_EMAIL, env.DJCYTOOLS_ADMIN_PASSWORD);
+    const cookie = `djcytools_session=${encodeURIComponent(session.token)}`;
+    const response = await request(rootDir, {
+      method: "POST",
+      url: "/api/generate-script",
+      headers: { cookie, "content-type": "application/json" },
+      body: createGenerateScriptBody(),
+    }, routeEnv);
+
+    const body = JSON.parse(response.body);
+    assert.equal(response.statusCode, 200);
+    assert.equal(body.content.selectedTitle, "修复后短剧");
+    assert.equal(body.repaired, true);
+    assert.equal(calls.length, 2);
+    assert.match(calls[1].body.messages[1].content, /待修复内容/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    closeDatabase(rootDir);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("script rewrite returns server fallback instead of surfacing invalid JSON errors", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "djcytools-ai-fallback-"));
+  const routeEnv = {
+    ...env,
+    DJCYTOOLS_SCRIPT_API_KEY: "deepseek-test-key",
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      model: "deepseek-chat",
+      choices: [{ message: { content: '{"selectedTitle":"仍然坏", "episodes": [' } }],
+      usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
+    }),
+  });
+
+  try {
+    const session = createSession(rootDir, routeEnv, env.DJCYTOOLS_ADMIN_EMAIL, env.DJCYTOOLS_ADMIN_PASSWORD);
+    const cookie = `djcytools_session=${encodeURIComponent(session.token)}`;
+    const response = await request(rootDir, {
+      method: "POST",
+      url: "/api/generate-script",
+      headers: { cookie, "content-type": "application/json" },
+      body: {
+        ...createGenerateScriptBody(),
+        instruction: "提高冲突",
+        currentVersion: {
+          selectedTitle: "原始短剧",
+          logline: "女主被误解后反击。",
+          sellingPoints: ["原始卖点"],
+          characters: [{ role: "女主", name: "林夏", archetype: "清洁工", motive: "复仇", secret: "真实继承人" }],
+          outline: [{ stage: "阶段 1", summary: "被羞辱后开始反击。" }],
+          episodes: [{ number: 1, title: "清洁工反击", hook: "她被当众羞辱。", beat: "受辱后翻盘。", script: "林夏拿出证据。", dialogue: ["林夏：轮到我了。"] }],
+          adHooks: ["清洁工被羞辱后反杀。"],
+        },
+      },
+    }, routeEnv);
+
+    const body = JSON.parse(response.body);
+    assert.equal(response.statusCode, 200);
+    assert.equal(body.fallback, "server_fallback");
+    assert.equal(body.content.selectedTitle, "原始短剧");
+    assert.equal(body.content.episodes[0].title, "清洁工反击");
+    assert.match(body.warning, /JSON|valid|content|Unexpected|Expected|terminated/i);
   } finally {
     globalThis.fetch = originalFetch;
     closeDatabase(rootDir);
@@ -451,6 +639,60 @@ test("owner can inspect and update the local notification outbox", async () => {
       body: { status: "sent" },
     });
     assert.equal(JSON.parse(updated.body).notification.status, "sent");
+  } finally {
+    closeDatabase(rootDir);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("email registration and password reset work in local token mode", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "djcytools-auth-api-"));
+  try {
+    const register = await request(rootDir, {
+      method: "POST",
+      url: "/api/auth/register",
+      headers: { "content-type": "application/json" },
+      body: {
+        email: "solo-founder@example.test",
+        password: "FounderPassword2026",
+        name: "Solo Founder",
+        teamName: "Solo Studio",
+      },
+    });
+    assert.equal(register.statusCode, 201);
+    const registered = JSON.parse(register.body);
+    assert.equal(registered.authenticated, true);
+    assert.equal(registered.user.email, "solo-founder@example.test");
+    assert.equal(registered.emailDelivery.configured, false);
+
+    const resetRequest = await request(rootDir, {
+      method: "POST",
+      url: "/api/auth/password-reset/request",
+      headers: { "content-type": "application/json" },
+      body: { email: "solo-founder@example.test" },
+    });
+    const resetBody = JSON.parse(resetRequest.body);
+    assert.equal(resetRequest.statusCode, 200);
+    assert.equal(resetBody.tokenExposed, true);
+    assert.ok(resetBody.token);
+    assert.equal(resetBody.emailDelivery.configured, false);
+
+    const confirm = await request(rootDir, {
+      method: "POST",
+      url: "/api/auth/password-reset/confirm",
+      headers: { "content-type": "application/json" },
+      body: { token: resetBody.token, password: "FounderPasswordReset2026" },
+    });
+    assert.equal(confirm.statusCode, 200);
+
+    const login = await request(rootDir, {
+      method: "POST",
+      url: "/api/auth/login",
+      headers: { "content-type": "application/json" },
+      body: { email: "solo-founder@example.test", password: "FounderPasswordReset2026" },
+    });
+    assert.equal(login.statusCode, 200);
+    assert.equal(JSON.parse(login.body).user.email, "solo-founder@example.test");
   } finally {
     closeDatabase(rootDir);
     await rm(rootDir, { recursive: true, force: true });

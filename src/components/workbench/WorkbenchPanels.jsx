@@ -8,15 +8,12 @@ import {
   FileJson,
   FileText,
   Flame,
-  FolderOpen,
   KeyRound,
   MailPlus,
   MessageSquare,
   MonitorPlay,
   Plus,
   RefreshCcw,
-  Save,
-  Search,
   Send,
   Store,
   Trash2,
@@ -44,19 +41,18 @@ function compactWorkbenchText(value = "", limit = 120) {
   return text.length > limit ? `${text.slice(0, limit)}...` : text;
 }
 
-function buildScriptVideoFallback({ project, version, ratio = "9:16" }) {
-  const episode = Array.isArray(version?.episodes) ? version.episodes[0] || {} : {};
-  const title = version?.selectedTitle || version?.name || project?.name || "当前短剧";
+function buildEpisodeRealVideoShot({ episode = {}, index = 0, title = "当前短剧", version = {}, ratio = "9:16" }) {
   const dialogue = Array.isArray(episode.dialogue) ? episode.dialogue.filter(Boolean) : [];
   const frame = compactWorkbenchText(episode.hook || episode.script || version?.logline || title, 120);
   const subtitle = compactWorkbenchText(dialogue[0] || episode.hook || version?.logline || title, 72);
-  const shot = {
-    id: "script-real-video-shot",
+  const episodeNumber = episode.number || index + 1;
+  return {
+    id: `script-real-video-episode-${episodeNumber}`,
     position: 1,
-    episodeNumber: episode.number || 1,
+    episodeNumber,
     episodeTitle: episode.title || title,
-    start: 0,
-    end: REAL_VIDEO_TEST_DURATION_SECONDS,
+    start: index * REAL_VIDEO_TEST_DURATION_SECONDS,
+    end: (index + 1) * REAL_VIDEO_TEST_DURATION_SECONDS,
     duration: REAL_VIDEO_TEST_DURATION_SECONDS,
     title: episode.title || "剧本直出真实视频",
     frame,
@@ -65,9 +61,16 @@ function buildScriptVideoFallback({ project, version, ratio = "9:16" }) {
     prop: compactWorkbenchText(episode.prop || "", 60),
     subtitle,
     voiceover: compactWorkbenchText(dialogue.join("；"), 120),
-    visualPrompt: `${ratio} vertical realistic short drama, based on the current script "${title}", cinematic mobile framing, clear conflict in first 3 seconds, natural acting, subtitle-safe composition`,
+    visualPrompt: `${ratio} vertical realistic short drama, episode ${episodeNumber} of "${title}", cinematic mobile framing, clear conflict in first 3 seconds, natural acting, subtitle-safe composition`,
     assetStatus: "script_ready",
   };
+}
+
+function buildScriptVideoFallback({ project, version, ratio = "9:16" }) {
+  const title = version?.selectedTitle || version?.name || project?.name || "当前短剧";
+  const episodes = Array.isArray(version?.episodes) && version.episodes.length ? version.episodes : [{ number: 1, title, hook: version?.logline }];
+  const shots = episodes.map((episode, index) => buildEpisodeRealVideoShot({ project, version, episode, index, title, ratio }));
+  const firstShot = shots[0] || {};
   return {
     id: "script-real-video-sample",
     name: `${title} 15秒真实视频`,
@@ -77,10 +80,95 @@ function buildScriptVideoFallback({ project, version, ratio = "9:16" }) {
     duration: REAL_VIDEO_TEST_DURATION_SECONDS,
     voice: "同步音频",
     style: "写实竖屏短剧",
-    logline: version?.logline || frame,
-    shots: [shot],
+    logline: version?.logline || firstShot.frame || title,
+    shots,
   };
 }
+
+function generatedVideoDisplayTitle(video = {}, index = 0, fallback = "") {
+  const title = String(video.title || "").trim();
+  if (title && !/^\?+$/.test(title)) return title;
+  if (fallback) return fallback;
+  if (video.downloadedAt) return `未命名成片 · ${formatDate(video.downloadedAt)}`;
+  return `未命名成片 ${index + 1}`;
+}
+
+function normalizeGeneratedVideoMatchText(value = "") {
+  return String(value || "").replace(/\s+/g, "").toLowerCase();
+}
+
+function videoBelongsToCurrentScript(video = {}, { projectId = "", versionId = "", scriptTitle = "" } = {}) {
+  const target = video.generationTarget || {};
+  if (projectId && target.projectId && String(target.projectId) === String(projectId)) return true;
+  if (versionId && target.versionId && String(target.versionId) === String(versionId)) return true;
+
+  const currentTitleKey = normalizeGeneratedVideoMatchText(scriptTitle);
+  if (!currentTitleKey) return false;
+
+  return [target.scriptTitle, video.title]
+    .map(normalizeGeneratedVideoMatchText)
+    .some((value) => value && (value.includes(currentTitleKey) || currentTitleKey.includes(value)));
+}
+
+function realVideoFrameStyle(ratio = "9:16") {
+  const [width, height] = String(ratio || "9:16").split(":").map((value) => Number(value));
+  const safeWidth = Number.isFinite(width) && width > 0 ? width : 9;
+  const safeHeight = Number.isFinite(height) && height > 0 ? height : 16;
+  const frameWidth = safeHeight > safeWidth ? "min(100%, 240px)" : safeHeight === safeWidth ? "min(100%, 320px)" : "100%";
+  return {
+    "--real-video-aspect-ratio": `${safeWidth} / ${safeHeight}`,
+    "--real-video-frame-width": frameWidth,
+  };
+}
+
+function buildCurrentGenerationSummary({ project = {}, version = {}, sample = {}, shot = {}, ratio = "9:16" }) {
+  const title = version.selectedTitle || version.name || project.name || sample.name || "当前短剧";
+  const episodeNumber = shot.episodeNumber || 1;
+  const episodeTitle = shot.episodeTitle || shot.title || "剧本片段";
+  const shotPosition = shot.position || 1;
+  const subtitle = shot.subtitle || shot.voiceover || "";
+  const frame = shot.frame || sample.logline || version.logline || "";
+  const targetLabel = `第${episodeNumber}集 ${episodeTitle} · 镜头 ${shotPosition}`;
+  const targetDetail = [subtitle ? `字幕：${subtitle}` : "", frame ? `画面：${frame}` : ""].filter(Boolean).join("；");
+  return {
+    title: `${title} · 第${episodeNumber}集 ${episodeTitle}`,
+    meta: `镜头 ${shotPosition} · ${REAL_VIDEO_TEST_DURATION_SECONDS}s · ${ratio}`,
+    subtitle,
+    frame,
+    generationTarget: {
+      scriptTitle: title,
+      episodeNumber,
+      episodeTitle,
+      shotPosition,
+      shotTitle: shot.title || subtitle || frame || episodeTitle,
+      label: targetLabel,
+      detail: targetDetail,
+      duration: REAL_VIDEO_TEST_DURATION_SECONDS,
+      ratio,
+    },
+  };
+}
+
+function generationTargetLabel(target = {}) {
+  if (!target || typeof target !== "object") return "";
+  if (target.label) return target.label;
+  const episode = target.episodeNumber ? `第${target.episodeNumber}集` : "";
+  const title = target.episodeTitle || target.shotTitle || "";
+  const shot = target.shotPosition ? `镜头 ${target.shotPosition}` : "";
+  return [episode && title ? `${episode} ${title}` : episode || title, shot].filter(Boolean).join(" · ");
+}
+
+function generationTargetDetail(target = {}) {
+  if (!target || typeof target !== "object") return "";
+  return target.detail || [target.subtitle ? `字幕：${target.subtitle}` : "", target.frame ? `画面：${target.frame}` : ""].filter(Boolean).join("；");
+}
+
+const videoBatchStatusLabels = {
+  waiting: "等待提交",
+  submitting: "提交中",
+  submitted: "已提交",
+  failed: "提交失败",
+};
 
 const deliveryStatusLabels = {
   queued: "待发送",
@@ -115,169 +203,19 @@ export function Metric({ icon: Icon, label, value }) {
   );
 }
 
-export function PanelHeader({ icon: Icon, eyebrow, title }) {
+export function PanelHeader({ icon: Icon, eyebrow, title, children }) {
   return (
-    <div className="panel-header">
-      <div className="panel-icon">
-        <Icon size={17} />
+    <div className={`panel-header ${children ? "has-extra" : ""}`}>
+      <div className="panel-header-title">
+        <div className="panel-icon">
+          <Icon size={17} />
+        </div>
+        <div>
+          <p className="eyebrow">{eyebrow}</p>
+          <h3>{title}</h3>
+        </div>
       </div>
-      <div>
-        <p className="eyebrow">{eyebrow}</p>
-        <h3>{title}</h3>
-      </div>
-    </div>
-  );
-}
-
-export function ProjectManagementPanel({
-  projects,
-  activeProjectId,
-  canEdit,
-  isGenerating,
-  onSelectProject,
-  onCreateDraftProject,
-  onGenerateProject,
-  onUpdateProject,
-  onDeleteProject,
-}) {
-  const statusOptions = ["草稿", "评审中", "已定稿", "已导出", "归档"];
-  const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState("全部");
-  const activeProject = useMemo(
-    () => projects.find((project) => project.id === activeProjectId) || projects[0] || null,
-    [activeProjectId, projects],
-  );
-  const [draft, setDraft] = useState({ name: "", status: "草稿" });
-
-  useEffect(() => {
-    if (!activeProject) return;
-    setDraft({ name: activeProject.name || "", status: activeProject.status || "草稿" });
-  }, [activeProject?.id, activeProject?.name, activeProject?.status]);
-
-  const filteredProjects = useMemo(() => {
-    const keyword = query.trim().toLowerCase();
-    return projects.filter((project) => {
-      const matchesKeyword = !keyword || `${project.name} ${project.status}`.toLowerCase().includes(keyword);
-      const matchesStatus = statusFilter === "全部" || project.status === statusFilter;
-      return matchesKeyword && matchesStatus;
-    });
-  }, [projects, query, statusFilter]);
-
-  const hasChanges = Boolean(
-    activeProject && (draft.name.trim() !== activeProject.name || draft.status !== activeProject.status),
-  );
-  const versionCount = activeProject?.versions?.length || 0;
-  const campaignCount = activeProject?.campaignResults?.length || 0;
-  const commentCount = activeProject?.comments?.length || 0;
-
-  function submitProject(event) {
-    event.preventDefault();
-    if (!activeProject || !canEdit || !hasChanges) return;
-    onUpdateProject(activeProject.id, {
-      name: draft.name.trim() || "未命名项目",
-      status: draft.status,
-    });
-  }
-
-  return (
-    <div className="project-management-panel">
-      <div className="project-management-actions">
-        <button className="secondary-action" type="button" onClick={onCreateDraftProject} disabled={!canEdit}>
-          <Plus size={15} />
-          新建草稿
-        </button>
-        <button className="secondary-action strong" type="button" onClick={onGenerateProject} disabled={!canEdit || isGenerating}>
-          <RefreshCcw size={15} />
-          {isGenerating ? "生成中" : "AI 生成"}
-        </button>
-      </div>
-
-      <div className="project-filters">
-        <label className="search-field">
-          <Search size={14} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索项目" />
-        </label>
-        <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
-          <option value="全部">全部状态</option>
-          {statusOptions.map((status) => (
-            <option key={status} value={status}>
-              {status}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div className="project-manager-list">
-        {filteredProjects.map((project) => (
-          <button
-            key={project.id}
-            type="button"
-            className={project.id === activeProject?.id ? "manager-project-row active" : "manager-project-row"}
-            onClick={() => onSelectProject(project.id)}
-          >
-            <FolderOpen size={15} />
-            <span>
-              <b>{project.name}</b>
-              <small>
-                {project.status} · {project.versions?.length || 0} 版 · {formatDate(project.updatedAt || project.createdAt)}
-              </small>
-            </span>
-          </button>
-        ))}
-        {filteredProjects.length === 0 && <p className="muted-note">没有匹配项目。</p>}
-      </div>
-
-      {activeProject && (
-        <form className="project-detail-form" onSubmit={submitProject}>
-          <div className="project-detail-stats">
-            <div>
-              <span>版本</span>
-              <strong>{versionCount}</strong>
-            </div>
-            <div>
-              <span>投流</span>
-              <strong>{campaignCount}</strong>
-            </div>
-            <div>
-              <span>评论</span>
-              <strong>{commentCount}</strong>
-            </div>
-          </div>
-          <label>
-            项目名
-            <input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} disabled={!canEdit} />
-          </label>
-          <label>
-            项目状态
-            <select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value })} disabled={!canEdit}>
-              {statusOptions.map((status) => (
-                <option key={status} value={status}>
-                  {status}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="project-detail-dates">
-            <span>创建 {formatDate(activeProject.createdAt)}</span>
-            <span>更新 {formatDate(activeProject.updatedAt || activeProject.createdAt)}</span>
-          </div>
-          <div className="project-management-actions">
-            <button className="secondary-action strong" type="submit" disabled={!canEdit || !hasChanges}>
-              <Save size={15} />
-              保存项目
-            </button>
-            <button
-              className="secondary-action danger"
-              type="button"
-              onClick={() => onDeleteProject(activeProject.id)}
-              disabled={!canEdit || projects.length <= 1}
-            >
-              <Trash2 size={15} />
-              删除项目
-            </button>
-          </div>
-        </form>
-      )}
+      {children && <div className="panel-header-extra">{children}</div>}
     </div>
   );
 }
@@ -486,99 +424,47 @@ export function ScriptEditor({ version, patchActiveVersion, onRewrite, isRewriti
   );
 
   return (
-    <div className="editor-content">
-      <div className="title-candidates">
-        {titleCandidates.map((title) => (
-          <button
-            key={title}
-            type="button"
-            className={version.selectedTitle === title ? "chip selected" : "chip"}
-            onClick={() => updateField("selectedTitle", title)}
-          >
-            {title}
-          </button>
-        ))}
-      </div>
-
-      <VersionMeta version={version} />
-
-      <label>
-        一句话卖点
-        <textarea rows={3} value={version.logline} onChange={(event) => updateField("logline", event.target.value)} />
-      </label>
-
-      <div className="section-band compact-section">
-        <h4>卖点卡</h4>
-        <div className="text-card-grid">
-          {sellingPoints.map((point, index) => (
-            <label className="text-card" key={`${point}-${index}`}>
-              卖点 {index + 1}
-              <textarea rows={2} value={point} onChange={(event) => updateStringList("sellingPoints", index, event.target.value)} />
-            </label>
-          ))}
-        </div>
-      </div>
-
-      <div className="quick-actions">
-        {["提高冲突", "生成投流钩子", "降低狗血度", "本地化表达"].map((item) => (
-          <button key={item} type="button" onClick={() => onRewrite(item)} disabled={isRewriting}>
-            <RefreshCcw size={15} />
-            {isRewriting ? "改写中..." : item}
-          </button>
-        ))}
-      </div>
-
-      <div className="section-band">
-        <h4>人物卡</h4>
-        <div className="character-grid">
-          {characters.map((character, index) => (
-            <div className="character-item" key={`${character.role}-${character.name}`}>
-              <span>{character.role}</span>
-              <input value={character.name} onChange={(event) => updateCharacter(index, "name", event.target.value)} />
-              <textarea rows={2} value={character.motive} onChange={(event) => updateCharacter(index, "motive", event.target.value)} />
-              <small>{character.archetype}</small>
+    <div className="editor-content workflow-script-editor">
+      <div className="script-focus-card">
+        <div className="script-focus-head">
+          <div>
+            <span>剧名候选</span>
+            <div className="title-candidates">
+              {titleCandidates.map((title) => (
+                <button
+                  key={title}
+                  type="button"
+                  className={version.selectedTitle === title ? "chip selected" : "chip"}
+                  onClick={() => updateField("selectedTitle", title)}
+                >
+                  {title}
+                </button>
+              ))}
             </div>
+          </div>
+          <VersionMeta version={version} />
+        </div>
+
+        <label>
+          一句话卖点
+          <textarea rows={2} value={version.logline} onChange={(event) => updateField("logline", event.target.value)} />
+        </label>
+
+        <div className="quick-actions">
+          {["提高冲突", "改短更直接", "强化结尾钩子", "本地化表达"].map((item) => (
+            <button key={item} type="button" onClick={() => onRewrite(item)} disabled={isRewriting}>
+              <RefreshCcw size={15} />
+              {isRewriting ? "改写中..." : item}
+            </button>
           ))}
         </div>
       </div>
 
-      <div className="section-band">
-        <h4>故事大纲</h4>
-        <div className="outline-list">
-          {outline.map((arc, index) => (
-            <label key={arc.id}>
-              {arc.stage}
-              <textarea
-                rows={2}
-                value={arc.summary}
-                onChange={(event) =>
-                  patchActiveVersion((current) => ({
-                    ...current,
-                    outline: current.outline.map((item, itemIndex) =>
-                      itemIndex === index ? { ...item, summary: event.target.value } : item,
-                    ),
-                  }))
-                }
-              />
-            </label>
-          ))}
+      <div className="section-band episode-section">
+        <div className="section-title-row">
+          <h4>剧本与分镜</h4>
+          <span>{episodes.length} 集 · 分镜已融合到对应剧集</span>
         </div>
-      </div>
-
-      <div className="section-band compact-section">
-        <h4>投流钩子</h4>
-        <div className="ad-hook-list">
-          {adHooks.map((hook, index) => (
-            <label key={`${hook}-${index}`}>
-              钩子 {index + 1}
-              <textarea rows={2} value={hook} onChange={(event) => updateStringList("adHooks", index, event.target.value)} />
-            </label>
-          ))}
-        </div>
-      </div>
-
-      <div className="section-band">
-        <h4>前 3 集剧本与分镜</h4>
         {episodes.map((episode, index) => {
           const storyboard = storyboardByEpisode.get(Number(episode.number)) || storyboards[index] || null;
           const shots = storyboard?.shots || [];
@@ -588,60 +474,129 @@ export function ScriptEditor({ version, patchActiveVersion, onRewrite, isRewriti
                 <strong>第 {episode.number} 集</strong>
                 <input value={episode.title} onChange={(event) => updateEpisode(index, "title", event.target.value)} />
               </div>
-              <label>
-                钩子
-                <textarea rows={2} value={episode.hook} onChange={(event) => updateEpisode(index, "hook", event.target.value)} />
-              </label>
-              <label>
-                结构
-                <textarea rows={2} value={episode.beat} onChange={(event) => updateEpisode(index, "beat", event.target.value)} />
-              </label>
-              <label>
-                脚本
-                <textarea rows={4} value={episode.script} onChange={(event) => updateEpisode(index, "script", event.target.value)} />
-              </label>
-              <label>
-                核心对白
-                <textarea
-                  rows={2}
-                  value={(episode.dialogue || []).join("\n")}
-                  onChange={(event) => updateEpisode(index, "dialogue", event.target.value)}
-                />
-              </label>
-              {shots.length > 0 && (
-                <div className="inline-storyboard" aria-label={`第 ${episode.number} 集分镜`}>
+              <div className="episode-compare-grid">
+                <div className="episode-script-panel">
+                  <div className="episode-column-head">
+                    <b>剧本</b>
+                    <span>可直接编辑</span>
+                  </div>
+                  <label>
+                    钩子
+                    <textarea rows={2} value={episode.hook} onChange={(event) => updateEpisode(index, "hook", event.target.value)} />
+                  </label>
+                  <label>
+                    结构
+                    <textarea rows={2} value={episode.beat} onChange={(event) => updateEpisode(index, "beat", event.target.value)} />
+                  </label>
+                  <label>
+                    脚本
+                    <textarea rows={3} value={episode.script} onChange={(event) => updateEpisode(index, "script", event.target.value)} />
+                  </label>
+                  <label>
+                    核心对白
+                    <textarea
+                      rows={2}
+                      value={(episode.dialogue || []).join("\n")}
+                      onChange={(event) => updateEpisode(index, "dialogue", event.target.value)}
+                    />
+                  </label>
+                </div>
+                <div className="inline-storyboard episode-storyboard-panel" aria-label={`第 ${episode.number} 集分镜`}>
                   <div className="inline-storyboard-head">
                     <MonitorPlay size={14} />
-                    <b>分镜</b>
+                    <b>对应分镜</b>
                     <span>{shots.length} 个镜头</span>
                     {storyboard?.title && storyboard.title !== episode.title && <em>{storyboard.title}</em>}
                   </div>
-                  {shots.map((shot) => (
-                    <div className="inline-shot-row" key={`${episode.number}-${shot.time}-${shot.frame}`}>
-                      <strong>{shot.time}</strong>
-                      <p>{shot.frame}</p>
-                      <small>{[shot.camera, shot.sound, shot.prop].filter(Boolean).join(" · ")}</small>
-                    </div>
-                  ))}
+                  {shots.length > 0 ? (
+                    shots.map((shot) => (
+                      <div className="inline-shot-row" key={`${episode.number}-${shot.time}-${shot.frame}`}>
+                        <strong>{shot.time}</strong>
+                        <p>{shot.frame}</p>
+                        <small>{[shot.camera, shot.sound, shot.prop].filter(Boolean).join(" · ")}</small>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="muted-note">暂无分镜，保存剧本后可重新生成。</p>
+                  )}
                 </div>
-              )}
+              </div>
             </article>
           );
         })}
       </div>
+
+      <details className="workflow-more-actions script-details">
+        <summary>更多剧本资料</summary>
+        <div className="section-band compact-section">
+          <h4>卖点卡</h4>
+          <div className="text-card-grid">
+            {sellingPoints.map((point, index) => (
+              <label className="text-card" key={`${point}-${index}`}>
+                卖点 {index + 1}
+                <textarea rows={2} value={point} onChange={(event) => updateStringList("sellingPoints", index, event.target.value)} />
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div className="section-band">
+          <h4>人物卡</h4>
+          <div className="character-grid">
+            {characters.map((character, index) => (
+              <div className="character-item" key={`${character.role}-${character.name}`}>
+                <span>{character.role}</span>
+                <input value={character.name} onChange={(event) => updateCharacter(index, "name", event.target.value)} />
+                <textarea rows={2} value={character.motive} onChange={(event) => updateCharacter(index, "motive", event.target.value)} />
+                <small>{character.archetype}</small>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="section-band">
+          <h4>故事大纲</h4>
+          <div className="outline-list">
+            {outline.map((arc, index) => (
+              <label key={arc.id}>
+                {arc.stage}
+                <textarea
+                  rows={2}
+                  value={arc.summary}
+                  onChange={(event) =>
+                    patchActiveVersion((current) => ({
+                      ...current,
+                      outline: current.outline.map((item, itemIndex) =>
+                        itemIndex === index ? { ...item, summary: event.target.value } : item,
+                      ),
+                    }))
+                  }
+                />
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div className="section-band compact-section">
+          <h4>投流钩子</h4>
+          <div className="ad-hook-list">
+            {adHooks.map((hook, index) => (
+              <label key={`${hook}-${index}`}>
+                钩子 {index + 1}
+                <textarea rows={2} value={hook} onChange={(event) => updateStringList("adHooks", index, event.target.value)} />
+              </label>
+            ))}
+          </div>
+        </div>
+      </details>
     </div>
   );
 }
 
 function VersionMeta({ version }) {
-  const usage = version.usage || {};
   return (
     <div className="version-meta">
-      <span>{version.source || "本地生成"}</span>
-      {version.model && <span>{version.model}</span>}
-      {typeof usage.total_tokens === "number" && <span>{usage.total_tokens} tokens</span>}
-      {typeof version.costUsd === "number" && <span>${version.costUsd}</span>}
-      {version.requestId && <span>{version.requestId}</span>}
+      <span>{version.source ? "AI 生成" : "本地生成"}</span>
       <span>{formatDate(version.createdAt)}</span>
     </div>
   );
@@ -675,7 +630,7 @@ export function ScoreCard({ version, onRewrite, isRewriting }) {
         {version.score.suggestions.map((suggestion) => (
           <button type="button" key={suggestion} onClick={() => onRewrite(suggestion)} disabled={isRewriting}>
             <Flame size={15} />
-            {isRewriting ? "DeepSeek 改写中..." : suggestion}
+            {isRewriting ? "AI 改写中..." : suggestion}
           </button>
         ))}
       </div>
@@ -800,27 +755,27 @@ export function DeliveryPanel({ project, commentText, setCommentText, addComment
 
       <div className="comment-box">
         <label>
-          团队评论
+          备注
           <textarea rows={2} value={commentText} onChange={(event) => setCommentText(event.target.value)} />
         </label>
         <button type="button" onClick={addComment}>
           <MessageSquare size={15} />
-          添加评论
+          添加备注
         </button>
       </div>
 
       <div className="activity-list">
-        {project.comments.map((comment) => (
+        {project.comments.slice(0, 3).map((comment) => (
           <p key={comment.id}>
             <b>{comment.author}</b>
             {comment.text}
             <small>{formatDate(comment.createdAt)}</small>
           </p>
         ))}
-        {project.exports.map((item) => (
+        {project.exports.slice(0, 3).map((item) => (
           <p key={item.id}>
             <b>{item.type}</b>
-            已导出 {item.version}
+            已生成文件 {item.version}
             <small>{formatDate(item.createdAt)}</small>
           </p>
         ))}
@@ -1159,7 +1114,7 @@ export function InteractivePanel({ project, activeVersion, onCreateInteractiveEx
         </button>
       </div>
       <div className="security-list">
-        {experiences.slice(0, 4).map((experience) => (
+        {experiences.slice(0, 2).map((experience) => (
           <p key={experience.id}>
             <b>{experience.name}</b>
             {experience.persona} · {experience.mood}
@@ -1168,7 +1123,6 @@ export function InteractivePanel({ project, activeVersion, onCreateInteractiveEx
         ))}
         {experiences.length === 0 && <p className="muted-note">可基于当前版本生成 C 端互动短剧雏形。</p>}
       </div>
-      {activeVersion && <p className="muted-note">当前来源：{activeVersion.selectedTitle || activeVersion.name}</p>}
     </div>
   );
 }
@@ -1176,7 +1130,11 @@ export function InteractivePanel({ project, activeVersion, onCreateInteractiveEx
 export function VideoSamplePanel({ project, activeVersion, canEdit = true }) {
   const [activeShotIndex, setActiveShotIndex] = useState(0);
   const [realVideoTask, setRealVideoTask] = useState(null);
+  const [submittedShotSummary, setSubmittedShotSummary] = useState(null);
   const [isCreatingRealVideo, setIsCreatingRealVideo] = useState(false);
+  const [isCreatingEpisodeBatch, setIsCreatingEpisodeBatch] = useState(false);
+  const [episodeRange, setEpisodeRange] = useState({ from: 1, to: 8 });
+  const [episodeBatchTasks, setEpisodeBatchTasks] = useState([]);
   const [realVideoError, setRealVideoError] = useState("");
   const [generatedVideos, setGeneratedVideos] = useState([]);
   const [generatedVideosError, setGeneratedVideosError] = useState("");
@@ -1184,12 +1142,50 @@ export function VideoSamplePanel({ project, activeVersion, canEdit = true }) {
     ratio: "9:16",
     duration: REAL_VIDEO_TEST_DURATION_SECONDS,
   });
+  const currentScriptTitle = activeVersion?.selectedTitle || activeVersion?.name || project?.name || "当前剧本";
   const scriptVideoSample = buildScriptVideoFallback({ project, version: activeVersion, ratio: realVideoOptions.ratio });
   const realVideoSample = scriptVideoSample;
-  const activeShot = realVideoSample?.shots?.[activeShotIndex] || realVideoSample?.shots?.[0] || null;
+  const episodeShots = Array.isArray(realVideoSample?.shots) ? realVideoSample.shots : [];
+  const maxEpisodeNumber = Math.max(1, ...episodeShots.map((shot, index) => Number(shot.episodeNumber || index + 1)).filter(Number.isFinite));
+  const clampEpisode = (value) => Math.min(maxEpisodeNumber, Math.max(1, Number(value) || 1));
+  const episodeRangeFrom = Math.min(clampEpisode(episodeRange.from), clampEpisode(episodeRange.to));
+  const episodeRangeTo = Math.max(clampEpisode(episodeRange.from), clampEpisode(episodeRange.to));
+  const selectedEpisodeShots = episodeShots.filter((shot, index) => {
+    const number = Number(shot.episodeNumber || index + 1);
+    return number >= episodeRangeFrom && number <= episodeRangeTo;
+  });
+  const activeShot = episodeShots[activeShotIndex] || episodeShots[0] || null;
+  const activeEpisodeNumber = clampEpisode(activeShot?.episodeNumber || activeShotIndex + 1);
   const realVideoFailed = isRealVideoTaskFailed(realVideoTask?.status);
   const realVideoDone = isRealVideoTaskDone(realVideoTask?.status);
   const activeRealVideoUrl = realVideoTask?.localVideoUrl || realVideoTask?.videoUrl || "";
+  const activeShotSummary = activeShot
+    ? buildCurrentGenerationSummary({ project, version: activeVersion, sample: realVideoSample, shot: activeShot, ratio: realVideoOptions.ratio })
+    : null;
+  const isTaskInFlight = Boolean(realVideoTask?.id && !realVideoDone && !realVideoFailed);
+  const visibleGenerationSummary = isTaskInFlight ? submittedShotSummary || activeShotSummary : activeShotSummary;
+  const realVideoTaskTarget = realVideoTask?.generationTarget || submittedShotSummary?.generationTarget || null;
+  const isSubmittingVideo = isCreatingRealVideo || isCreatingEpisodeBatch;
+  const activeRealVideoRatio = realVideoTaskTarget?.ratio || realVideoTask?.ratio || realVideoOptions.ratio;
+  const activeRealVideoFrameStyle = realVideoFrameStyle(activeRealVideoRatio);
+  const generatedVideosForCurrentScript = useMemo(
+    () =>
+      generatedVideos.filter((video) =>
+        videoBelongsToCurrentScript(video, {
+          projectId: project?.id || "",
+          versionId: activeVersion?.id || "",
+          scriptTitle: currentScriptTitle,
+        }),
+      ),
+    [activeVersion?.id, currentScriptTitle, generatedVideos, project?.id],
+  );
+  const otherGeneratedVideoCount = Math.max(0, generatedVideos.length - generatedVideosForCurrentScript.length);
+
+  function selectEpisode(value) {
+    const nextEpisode = clampEpisode(value);
+    const nextIndex = episodeShots.findIndex((shot, index) => Number(shot.episodeNumber || index + 1) === nextEpisode);
+    setActiveShotIndex(nextIndex >= 0 ? nextIndex : 0);
+  }
 
   async function refreshGeneratedVideos() {
     setGeneratedVideosError("");
@@ -1208,6 +1204,12 @@ export function VideoSamplePanel({ project, activeVersion, canEdit = true }) {
   useEffect(() => {
     setActiveShotIndex(0);
     setRealVideoTask(null);
+    setSubmittedShotSummary(null);
+    setEpisodeRange({
+      from: 1,
+      to: Math.min(8, Math.max(1, ...(Array.isArray(activeVersion?.episodes) ? activeVersion.episodes.map((episode, index) => Number(episode.number || index + 1)).filter(Number.isFinite) : [1]))),
+    });
+    setEpisodeBatchTasks([]);
     setRealVideoError("");
   }, [activeVersion?.id]);
 
@@ -1231,7 +1233,12 @@ export function VideoSamplePanel({ project, activeVersion, canEdit = true }) {
       try {
         const data = await fetchRealVideoTask(realVideoTask.id);
         if (cancelled) return;
-        setRealVideoTask(data.task);
+        setRealVideoTask((current) => ({
+          ...(data.task || {}),
+          title: data.task?.title || current?.title || realVideoSample.name || activeVersion.selectedTitle || project.name,
+          ratio: data.task?.ratio || current?.ratio || submittedShotSummary?.generationTarget?.ratio || realVideoOptions.ratio,
+          generationTarget: data.task?.generationTarget || current?.generationTarget || submittedShotSummary?.generationTarget || null,
+        }));
         if (data.task?.errorHint || data.task?.error) setRealVideoError(data.task.errorHint || data.task.error);
         if (isRealVideoTaskDone(data.task?.status) || isRealVideoTaskFailed(data.task?.status)) stopPolling();
         if (isRealVideoTaskDone(data.task?.status) && (data.task?.localVideoUrl || data.task?.videoUrl)) refreshGeneratedVideos();
@@ -1249,12 +1256,20 @@ export function VideoSamplePanel({ project, activeVersion, canEdit = true }) {
       cancelled = true;
       stopPolling();
     };
-  }, [realVideoTask?.id, realVideoDone, realVideoFailed]);
+  }, [realVideoTask?.id, realVideoDone, realVideoFailed, realVideoSample?.name, activeVersion?.selectedTitle, project?.name, submittedShotSummary?.generationTarget, realVideoOptions.ratio]);
 
   async function createRealVideo() {
-    if (!canEdit || !activeVersion || !realVideoSample || !activeShot || isCreatingRealVideo) return;
+    if (!canEdit || !activeVersion || !realVideoSample || !activeShot || isSubmittingVideo) return;
     setIsCreatingRealVideo(true);
     setRealVideoError("");
+    const nextSubmittedSummary = buildCurrentGenerationSummary({
+      project,
+      version: activeVersion,
+      sample: realVideoSample,
+      shot: activeShot,
+      ratio: realVideoOptions.ratio,
+    });
+    setSubmittedShotSummary(nextSubmittedSummary);
     try {
       const data = await createRealVideoTask({
         project,
@@ -1265,7 +1280,12 @@ export function VideoSamplePanel({ project, activeVersion, canEdit = true }) {
         ratio: realVideoOptions.ratio,
         generateAudio: true,
       });
-      setRealVideoTask(data.task);
+      setRealVideoTask({
+        ...(data.task || {}),
+        title: data.task?.title || realVideoSample.name || activeVersion.selectedTitle || project.name,
+        ratio: data.task?.ratio || nextSubmittedSummary.generationTarget.ratio,
+        generationTarget: data.task?.generationTarget || nextSubmittedSummary.generationTarget,
+      });
       if (data.task?.errorHint || data.task?.error) setRealVideoError(data.task.errorHint || data.task.error);
     } catch (error) {
       setRealVideoError(error instanceof Error ? error.message : "真实视频任务提交失败");
@@ -1274,19 +1294,77 @@ export function VideoSamplePanel({ project, activeVersion, canEdit = true }) {
     }
   }
 
+  async function createEpisodeRangeVideos() {
+    if (!canEdit || !activeVersion || !realVideoSample || !selectedEpisodeShots.length || isSubmittingVideo) return;
+    setIsCreatingEpisodeBatch(true);
+    setRealVideoError("");
+    const initialBatch = selectedEpisodeShots.map((shot) => {
+      const summary = buildCurrentGenerationSummary({ project, version: activeVersion, sample: realVideoSample, shot, ratio: realVideoOptions.ratio });
+      return {
+        key: shot.id || `${summary.generationTarget.episodeNumber}-${summary.generationTarget.shotPosition}`,
+        summary,
+        status: "waiting",
+        taskId: "",
+        error: "",
+      };
+    });
+    setEpisodeBatchTasks(initialBatch);
+
+    for (const shot of selectedEpisodeShots) {
+      const summary = buildCurrentGenerationSummary({ project, version: activeVersion, sample: realVideoSample, shot, ratio: realVideoOptions.ratio });
+      const key = shot.id || `${summary.generationTarget.episodeNumber}-${summary.generationTarget.shotPosition}`;
+      setSubmittedShotSummary(summary);
+      setEpisodeBatchTasks((current) => current.map((item) => (item.key === key ? { ...item, status: "submitting", error: "" } : item)));
+      try {
+        const data = await createRealVideoTask({
+          project,
+          version: activeVersion,
+          sample: realVideoSample,
+          shot,
+          duration: REAL_VIDEO_TEST_DURATION_SECONDS,
+          ratio: realVideoOptions.ratio,
+          generateAudio: true,
+        });
+        const task = {
+          ...(data.task || {}),
+          title: data.task?.title || summary.title,
+          ratio: data.task?.ratio || summary.generationTarget.ratio,
+          generationTarget: data.task?.generationTarget || summary.generationTarget,
+        };
+        setRealVideoTask(task);
+        setEpisodeBatchTasks((current) =>
+          current.map((item) => (item.key === key ? { ...item, status: "submitted", taskId: task.id || "", error: task.errorHint || task.error || "" } : item)),
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "真实视频任务提交失败";
+        setRealVideoError(message);
+        setEpisodeBatchTasks((current) => current.map((item) => (item.key === key ? { ...item, status: "failed", error: message } : item)));
+      }
+    }
+
+    setIsCreatingEpisodeBatch(false);
+    refreshGeneratedVideos();
+  }
+
   return (
     <div className="video-sample-panel">
-      <div className="video-sample-actions">
-        <button className="secondary-action strong" type="button" onClick={createRealVideo} disabled={!canEdit || !activeVersion || isCreatingRealVideo}>
-          <MonitorPlay size={15} />
-          {isCreatingRealVideo ? "提交中" : canEdit ? "生成15秒真实视频" : "查看者无生成权限"}
-        </button>
+      <div className="video-workflow-intro">
+        <b>{activeVersion?.selectedTitle || activeVersion?.name || project?.name || "当前剧本"}</b>
+        <span>选择单集或剧集范围，提交后会按剧本内容生成真实视频。</span>
       </div>
-
+      {visibleGenerationSummary && (
+        <div className={`current-generation-card ${isTaskInFlight ? "running" : ""}`} aria-label="当前生成片段">
+          <span>{isTaskInFlight ? "正在生成" : "准备生成"}</span>
+          <b>{isTaskInFlight ? realVideoTask?.title || visibleGenerationSummary.title : visibleGenerationSummary.title}</b>
+          <small>{visibleGenerationSummary.meta}</small>
+          {(visibleGenerationSummary.subtitle || visibleGenerationSummary.frame) && (
+            <p>{visibleGenerationSummary.subtitle || visibleGenerationSummary.frame}</p>
+          )}
+        </div>
+      )}
       {activeVersion && activeShot && (
         <div className="sample-preview-grid">
           <div className="real-video-stack">
-            {activeRealVideoUrl && <video className="rendered-video-preview real-video" controls src={activeRealVideoUrl} />}
             {activeVersion && (
               <div className="real-video-options">
                 <label>
@@ -1303,7 +1381,18 @@ export function VideoSamplePanel({ project, activeVersion, canEdit = true }) {
                   </select>
                 </label>
                 <label>
-                  秒数（测试固定）
+                  单集
+                  <input
+                    aria-label="单独生成集数"
+                    max={maxEpisodeNumber}
+                    min="1"
+                    type="number"
+                    value={activeEpisodeNumber}
+                    onChange={(event) => selectEpisode(event.target.value)}
+                  />
+                </label>
+                <label>
+                  秒数
                   <input
                     max="15"
                     min="15"
@@ -1313,12 +1402,105 @@ export function VideoSamplePanel({ project, activeVersion, canEdit = true }) {
                     onChange={() => {}}
                   />
                 </label>
+                <label>
+                  起始集
+                  <input
+                    aria-label="起始集"
+                    max={maxEpisodeNumber}
+                    min="1"
+                    type="number"
+                    value={episodeRangeFrom}
+                    onChange={(event) => setEpisodeRange((current) => ({ ...current, from: Number(event.target.value) }))}
+                  />
+                </label>
+                <label>
+                  结束集
+                  <input
+                    aria-label="结束集"
+                    max={maxEpisodeNumber}
+                    min="1"
+                    type="number"
+                    value={episodeRangeTo}
+                    onChange={(event) => setEpisodeRange((current) => ({ ...current, to: Number(event.target.value) }))}
+                  />
+                </label>
               </div>
             )}
-            {realVideoTask && (
+            <div className="video-sample-actions">
+              <button className="secondary-action strong" type="button" onClick={createRealVideo} disabled={!canEdit || !activeVersion || isSubmittingVideo}>
+                <MonitorPlay size={15} />
+                {isCreatingRealVideo ? "提交中" : canEdit ? `生成当前第${activeEpisodeNumber}集` : "查看者无生成权限"}
+              </button>
+              <button className="secondary-action" type="button" onClick={createEpisodeRangeVideos} disabled={!canEdit || !activeVersion || isSubmittingVideo || !selectedEpisodeShots.length}>
+                <ClipboardList size={15} />
+                {isCreatingEpisodeBatch ? "批量提交中" : `生成第${episodeRangeFrom}${episodeRangeFrom === episodeRangeTo ? "" : `-${episodeRangeTo}`}集`}
+              </button>
+            </div>
+            <div className={`generated-video-list ${generatedVideosForCurrentScript.length === 0 ? "empty" : ""}`}>
+              <div className="generated-video-list-head">
+                <div>
+                  <b>当前剧本已生成视频</b>
+                  <small>{generatedVideosForCurrentScript.length ? `${generatedVideosForCurrentScript.length} 条可查看` : "生成完成后显示在这里"}</small>
+                </div>
+                <button className="mini-action" type="button" onClick={refreshGeneratedVideos}>
+                  <RefreshCcw size={13} />
+                  刷新
+                </button>
+              </div>
+              {generatedVideosForCurrentScript.length === 0 && (
+                <p className="generated-video-empty">
+                  {generatedVideosError ? generatedVideosError : `${currentScriptTitle} 还没有已生成视频。生成当前集或剧集范围后会出现在这里。`}
+                </p>
+              )}
+              {generatedVideosForCurrentScript.slice(0, 3).map((video, index) => {
+                  const target = video.generationTarget || null;
+                  const targetLabel = generationTargetLabel(target);
+                  const targetDetail = generationTargetDetail(target);
+                  const displayTitle = target?.scriptTitle || generatedVideoDisplayTitle(video, index, currentScriptTitle);
+                  return (
+                    <button
+                      className={video.localVideoUrl === activeRealVideoUrl ? "active" : ""}
+                      key={video.taskId || video.id || `${displayTitle}-${index}`}
+                      type="button"
+                      onClick={() => {
+                        setRealVideoTask({
+                          id: video.taskId || video.id,
+                          title: generatedVideoDisplayTitle(video, index, displayTitle),
+                          status: video.status || "succeeded",
+                          ratio: video.ratio || target?.ratio || realVideoOptions.ratio,
+                          videoUrl: video.sourceVideoUrl || "",
+                          localVideoUrl: video.localVideoUrl,
+                          generationTarget: target,
+                        });
+                        setSubmittedShotSummary(null);
+                        setRealVideoError("");
+                      }}
+                    >
+                      <b>{displayTitle}</b>
+                      {targetLabel ? <strong>{targetLabel}</strong> : <strong>旧视频未记录具体集数</strong>}
+                      {targetDetail && <small>{targetDetail}</small>}
+                      <small>{video.downloadedAt ? `生成时间 ${formatDate(video.downloadedAt)}` : "已生成"}</small>
+                    </button>
+                  );
+                })}
+              {generatedVideosForCurrentScript.length > 3 && <small>另有 {generatedVideosForCurrentScript.length - 3} 条当前剧本视频。</small>}
+              {generatedVideosForCurrentScript.length === 0 && otherGeneratedVideoCount > 0 && !generatedVideosError && (
+                <small>已有其他剧本视频 {otherGeneratedVideoCount} 条；这里仅显示当前剧本。</small>
+              )}
+              {generatedVideosForCurrentScript.length > 0 && generatedVideosError && <small>{generatedVideosError}</small>}
+            </div>
+            {realVideoTask && !activeRealVideoUrl && (
               <div className={`real-video-task ${realVideoFailed ? "failed" : ""}`}>
-                <b>{activeRealVideoUrl ? "真实视频已生成" : realVideoFailed ? "真实视频生成失败" : "真实视频生成中"}</b>
-                <span>任务 {realVideoTask.id || "-"} · {realVideoTask.status || "submitted"}</span>
+                <b>{realVideoTask.title || realVideoSample.name || activeVersion.selectedTitle || "真实视频"}</b>
+                <strong>{activeRealVideoUrl ? "视频已生成" : realVideoFailed ? "生成失败" : "云端生成中"}</strong>
+                {realVideoTaskTarget && (
+                  <div className="real-video-target">
+                    <span>对应片段</span>
+                    <b>{generationTargetLabel(realVideoTaskTarget)}</b>
+                    {generationTargetDetail(realVideoTaskTarget) && <small>{generationTargetDetail(realVideoTaskTarget)}</small>}
+                  </div>
+                )}
+                <span>{activeRealVideoUrl ? "已保存到已生成视频" : realVideoFailed ? "请根据提示处理后重新生成" : "完成后会自动出现在下方"}</span>
                 {(realVideoTask.errorHint || realVideoTask.error) && <small>{realVideoTask.errorHint || realVideoTask.error}</small>}
                 {realVideoTask.errorHelpUrl && (
                   <a href={realVideoTask.errorHelpUrl} target="_blank" rel="noreferrer">
@@ -1332,44 +1514,31 @@ export function VideoSamplePanel({ project, activeVersion, canEdit = true }) {
                 )}
               </div>
             )}
-            {(generatedVideos.length > 0 || generatedVideosError) && (
-              <div className="generated-video-list">
-                <div className="generated-video-list-head">
-                  <b>本地真实视频</b>
-                  <button className="mini-action" type="button" onClick={refreshGeneratedVideos}>
-                    <RefreshCcw size={13} />
-                    刷新
-                  </button>
+            {episodeBatchTasks.length > 0 && (
+              <div className="episode-batch-list" aria-label="本次剧集生成">
+                <div className="episode-batch-head">
+                  <b>本次生成</b>
+                  <small>
+                    {(activeVersion?.selectedTitle || project?.name || realVideoSample.name || "当前剧本")} · 第{episodeRangeFrom}
+                    {episodeRangeFrom === episodeRangeTo ? "" : `-${episodeRangeTo}`}集
+                  </small>
                 </div>
-                {generatedVideos.slice(0, 4).map((video) => (
-                  <button
-                    className={video.localVideoUrl === activeRealVideoUrl ? "active" : ""}
-                    key={video.taskId}
-                    type="button"
-                    onClick={() => {
-                      setRealVideoTask({
-                        id: video.taskId,
-                        status: video.status || "succeeded",
-                        videoUrl: video.sourceVideoUrl || "",
-                        localVideoUrl: video.localVideoUrl,
-                      });
-                      setRealVideoError("");
-                    }}
-                  >
-                    <b>{video.taskId}</b>
-                    <small>
-                      {[video.status || "succeeded", video.duration ? `${video.duration}s` : "", video.ratio, video.downloadedAt ? formatDate(video.downloadedAt) : ""]
-                        .filter(Boolean)
-                        .join(" · ")}
-                    </small>
-                  </button>
+                {episodeBatchTasks.map((item) => (
+                  <p className={item.status} key={item.key}>
+                    <b>{generationTargetLabel(item.summary?.generationTarget)}</b>
+                    <small>{[videoBatchStatusLabels[item.status] || item.status, item.taskId ? `任务 ${item.taskId}` : "", item.error].filter(Boolean).join(" · ")}</small>
+                  </p>
                 ))}
-                {generatedVideosError && <small>{generatedVideosError}</small>}
               </div>
             )}
             {realVideoError && <p className="muted-note">{realVideoError}</p>}
           </div>
-          <div className="sample-meta">
+          <div className={`sample-meta ${activeRealVideoUrl ? "has-real-video" : ""}`}>
+            {activeRealVideoUrl && (
+              <div className="real-video-frame" style={activeRealVideoFrameStyle}>
+                <video className="rendered-video-preview real-video" controls src={activeRealVideoUrl} />
+              </div>
+            )}
             <div className="panel-inline-head">
               <span className="timestamp">{realVideoSample.source || realVideoSample.status} · {REAL_VIDEO_TEST_DURATION_SECONDS}s · {realVideoSample.voice}</span>
             </div>
@@ -1389,7 +1558,7 @@ export function VideoSamplePanel({ project, activeVersion, canEdit = true }) {
                 比例
               </span>
             </div>
-            <div className="shot-timeline">
+            {!activeRealVideoUrl && <div className="shot-timeline">
               {(realVideoSample.shots || []).map((shot, index) => (
                 <button
                   className={index === activeShotIndex ? "active" : ""}
@@ -1404,17 +1573,20 @@ export function VideoSamplePanel({ project, activeVersion, canEdit = true }) {
                   <small>{Math.round(shot.start)}-{Math.round(shot.end)}s · {shot.assetStatus}</small>
                 </button>
               ))}
-            </div>
+            </div>}
           </div>
         </div>
       )}
 
       {activeVersion && activeShot && (
-        <div className="copy-block">
-          <b>Seedance 提示参考</b>
-          <code>{activeShot.visualPrompt}</code>
-          <small>{activeShot.sound} · 道具：{activeShot.prop}</small>
-        </div>
+        <details className="workflow-more-actions video-prompt-details">
+          <summary>查看生成提示词</summary>
+          <div className="copy-block">
+            <b>AI 提示参考</b>
+            <code>{activeShot.visualPrompt}</code>
+            <small>{activeShot.sound} · 道具：{activeShot.prop}</small>
+          </div>
+        </details>
       )}
 
       {!activeVersion && (

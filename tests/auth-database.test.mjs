@@ -114,6 +114,8 @@ test("SQLite store seeds auth, migrates workspace shape and enforces sessions", 
     });
     assert.equal(registered.user.email, "new-user@example.test");
     assert.equal(registered.membership.role, "owner");
+    assert.equal(registered.registrationNotification.kind, "registration_welcome");
+    assert.match(registered.registrationNotification.body, /new-user@example\.test/);
     const registeredWorkspace = readWorkspaceFromDatabase(rootDir, env, registered);
     assert.equal(registeredWorkspace.team.name, "新用户团队");
     assert.notEqual(registeredWorkspace.team.id, saved.team.id);

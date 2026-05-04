@@ -2,7 +2,7 @@ import { buildRewriteParams, getMarket, getTemplate, normalizeAiVersion } from "
 
 async function callGenerateScript(payload) {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 75_000);
+  const timeout = window.setTimeout(() => controller.abort(), 180_000);
   try {
     const response = await fetch("/api/generate-script", {
       method: "POST",
@@ -15,11 +15,11 @@ async function callGenerateScript(payload) {
     if (!response.ok) {
       const code = data.code ? `（${data.code}）` : "";
       const requestId = data.requestId ? ` 请求ID：${data.requestId}` : "";
-      throw new Error(`${data.error || "DeepSeek 生成失败"}${code}${requestId}`);
+      throw new Error(`${data.error || "AI 生成失败"}${code}${requestId}`);
     }
     return data;
   } catch (error) {
-    if (error?.name === "AbortError") throw new Error("DeepSeek 请求超时，已切换到本地兜底生成");
+    if (error?.name === "AbortError") throw new Error("AI 请求超时，已切换到本地兜底生成");
     throw error;
   } finally {
     window.clearTimeout(timeout);
@@ -40,7 +40,7 @@ export async function generateVersionWithDeepSeek({ brief, params, templateCatal
     payload: data.content || {},
     usage: data.usage,
     model: data.model,
-    source: "DeepSeek",
+    source: data.fallback ? "服务端兜底" : data.repaired ? "AI修复" : "AI",
     requestId: data.requestId,
     costUsd: data.costUsd,
     templateCatalog,
@@ -71,12 +71,12 @@ export async function rewriteVersionWithDeepSeek({ project, activeVersion, instr
     payload: data.content || {},
     usage: data.usage,
     model: data.model,
-    source: "DeepSeek改写",
+    source: data.fallback ? "服务端兜底改写" : data.repaired ? "AI修复改写" : "AI改写",
     requestId: data.requestId,
     costUsd: data.costUsd,
     templateCatalog,
   });
-  version.name = `${instruction || "DeepSeek改写"} ${new Date().toLocaleTimeString("zh-CN", {
+  version.name = `${instruction || "AI改写"} ${new Date().toLocaleTimeString("zh-CN", {
     hour: "2-digit",
     minute: "2-digit",
   })}`;

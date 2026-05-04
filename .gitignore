@@ -5,6 +5,7 @@ dist
 .env
 .env.local
 data/*.json
+data/*.sql
 data/*.tmp
 data/*.sqlite
 data/*.sqlite-*

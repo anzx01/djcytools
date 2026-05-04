@@ -30,6 +30,9 @@ export default defineConfig({
     env: {
       ...process.env,
       DJCYTOOLS_DATA_DIR: ".e2e-data",
+      DJCYTOOLS_DATABASE_URL: "",
+      DJCYTOOLS_DATABASE_SSL: "false",
+      DJCYTOOLS_PSQL_BIN: "",
       DJCYTOOLS_ADMIN_EMAIL: "e2e-owner@example.test",
       DJCYTOOLS_ADMIN_PASSWORD: "E2EPassword2026",
       DJCYTOOLS_ADMIN_NAME: "E2E 所有者",

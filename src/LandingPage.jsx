@@ -3,6 +3,8 @@ import {
   BarChart3,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Clapperboard,
   Database,
   FileText,
@@ -25,7 +27,7 @@ import { useEffect, useState } from "react";
 import workbenchPreview from "../image/README/1777172899013.png";
 import { templates, templateTypes } from "./data/templates.js";
 
-// 设计方向：短剧战争室 + 编辑部工业感，服务 AI 短剧剧本生成器、短剧出海模板、DeepSeek 剧本生成和 Seedance 真实视频等核心关键词。
+// 设计方向：短剧战争室 + 编辑部工业感，服务 AI 短剧剧本生成器、短剧出海模板、AI 剧本生成和 AI 真实视频等核心关键词。
 const workflow = [
   {
     icon: Sparkles,
@@ -65,7 +67,7 @@ const benefits = [
   {
     icon: LockKeyhole,
     title: "模型 Key 不进前端",
-    text: "前端只调用本地代理，DeepSeek 和 Seedance 密钥保留在服务端环境变量中。",
+    text: "前端只调用本地代理，AI 密钥保留在服务端环境变量中。",
   },
   {
     icon: TimerReset,
@@ -75,7 +77,7 @@ const benefits = [
   {
     icon: Clapperboard,
     title: "剧本直接衔接真实视频",
-    text: "结构化剧本内置分镜提示，生成后可直接进入 Seedance 真实视频流程。",
+    text: "结构化剧本内置分镜提示，生成后可直接进入 AI 真实视频流程。",
   },
   {
     icon: Database,
@@ -90,8 +92,8 @@ const benefits = [
 ];
 
 const proof = [
-  "DeepSeek 生成与定向改写",
-  "Seedance 真实视频生成",
+  "自动生成与定向改写",
+  "自动真实视频生成",
   "SQLite 持久化与审计",
   "AI 调用日志与成本统计",
   "TXT / PDF / DOC / JSON 导出",
@@ -124,12 +126,12 @@ const testimonials = [
 
 const faqItems = [
   {
-    question: "DeepSeek 和 Doubao / 火山方舟 API Key 会不会暴露在浏览器里？",
+    question: "AI API Key 会不会暴露在浏览器里？",
     answer: "不会。当前实现通过服务端代理读取 .env，前端只调用本地 API，生产构建不会把 Key 打进浏览器 bundle。",
   },
   {
     question: "外部 AI 接口失败时还能用吗？",
-    answer: "可以。工作台保留本地兜底生成逻辑，DeepSeek 或 Doubao-Seed-2.0 临时失败不会阻断立项、编辑和导出流程。",
+    answer: "可以。工作台保留本地兜底生成逻辑，AI 临时失败不会阻断立项、编辑和导出流程。",
   },
   {
     question: "模板能继续扩展吗？",
@@ -225,10 +227,10 @@ export default function LandingPage({ onLaunch }) {
 
       <header className="landing-hero video-hero">
         <div className="hero-copy">
-          <p className="landing-kicker">AI 短剧剧本生成器 / DeepSeek 剧本 + Seedance 真实视频</p>
+          <p className="landing-kicker">AI 短剧剧本生成器 / AI 剧本 + AI 真实视频</p>
           <h1>一人公司也能把短剧创意生成剧本和真实视频</h1>
           <p>
-            DJCYTools 用 DeepSeek 写中文短剧，用 Seedance 生成真实视频，把“复仇、逆袭、职场反杀”这类创意直接推进到可剪、可改、可投流的成片工作流。
+            DJCYTools 用 AI 写中文短剧，用 AI 生成真实视频，把“复仇、逆袭、职场反杀”这类创意直接推进到可剪、可改、可投流的成片工作流。
           </p>
           <div className="hero-actions">
             <button className="landing-primary" type="button" onClick={onLaunch}>
@@ -467,7 +469,7 @@ export default function LandingPage({ onLaunch }) {
             <p className="landing-kicker">Start Now</p>
             <h2>今晚把下一个短剧项目从灵感推进到可导出的首版方案</h2>
             <p>
-              先用模板选题，再让 DeepSeek 生成首版，最后用结构化剧本、Seedance 真实视频和导出把讨论落到文件里。
+              先用模板选题，再让 AI 生成首版，最后用结构化剧本、AI 真实视频和导出把讨论落到文件里。
             </p>
             <div className="final-cta-actions">
               <button className="landing-primary" type="button" onClick={onLaunch}>
@@ -546,6 +548,14 @@ export default function LandingPage({ onLaunch }) {
 
 function HeroVideoCarousel({ activeVideo, activeVideoIndex, videos, onLaunch, onSelectVideo }) {
   const title = videoDisplayTitle(activeVideo, activeVideoIndex);
+  const activeVideoFrameStyle = heroVideoFrameStyle(activeVideo);
+  const visibleThumbs = videos.length
+    ? Array.from({ length: Math.min(4, videos.length) }, (_, offset) => {
+        const index = (activeVideoIndex + offset) % videos.length;
+        return { video: videos[index], index };
+      })
+    : [];
+  const canPageVideos = videos.length > visibleThumbs.length;
   return (
     <aside className="hero-video-carousel" aria-label="首页真实视频轮播">
       <div className="hero-video-head">
@@ -557,22 +567,47 @@ function HeroVideoCarousel({ activeVideo, activeVideoIndex, videos, onLaunch, on
       </div>
       {activeVideo ? (
         <>
-          <div className="hero-video-player">
-            <video key={activeVideo.localVideoUrl} src={activeVideo.localVideoUrl} autoPlay muted loop playsInline controls preload="metadata" />
+          <div className="hero-video-player" style={activeVideoFrameStyle}>
+            <video
+              key={activeVideo.localVideoUrl}
+              src={activeVideo.localVideoUrl}
+              autoPlay
+              muted
+              loop
+              playsInline
+              preload="metadata"
+              aria-label={title}
+            />
           </div>
           <div className="hero-video-meta">
             <h3>{title}</h3>
-            <p>
-              {activeVideo.model || "Seedance"} · {activeVideo.duration || 15}s · {activeVideo.ratio || "9:16"}
-            </p>
+            <p>{videoAdLine(activeVideo)}</p>
           </div>
           <div className="hero-video-strip" aria-label="全部已生成视频">
             <div className="hero-video-strip-head">
               <b>全部生成视频</b>
-              <span>{videos.length} 条</span>
+              <span>{videos.length ? `${activeVideoIndex + 1}/${videos.length}` : "0 条"}</span>
+              {canPageVideos && (
+                <div className="hero-video-pager" aria-label="切换生成视频列表">
+                  <button
+                    type="button"
+                    aria-label="上一组生成视频"
+                    onClick={() => onSelectVideo((activeVideoIndex - 1 + videos.length) % videos.length)}
+                  >
+                    <ChevronLeft size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="下一组生成视频"
+                    onClick={() => onSelectVideo((activeVideoIndex + 1) % videos.length)}
+                  >
+                    <ChevronRight size={14} />
+                  </button>
+                </div>
+              )}
             </div>
             <div className="hero-video-thumbs">
-              {videos.map((video, index) => (
+              {visibleThumbs.map(({ video, index }) => (
                 <button
                   aria-label={`查看第 ${index + 1} 条已生成视频`}
                   className={index === activeVideoIndex ? "active" : ""}
@@ -584,7 +619,7 @@ function HeroVideoCarousel({ activeVideo, activeVideoIndex, videos, onLaunch, on
                     <video src={video.localVideoUrl} muted playsInline preload="metadata" />
                   </span>
                   <b>{videoDisplayTitle(video, index)}</b>
-                  <small>{[video.duration ? `${video.duration}s` : "", video.ratio, video.downloadedAt ? "已入库" : ""].filter(Boolean).join(" · ")}</small>
+                  <small>{videoThumbLine(video)}</small>
                 </button>
               ))}
             </div>
@@ -607,7 +642,39 @@ function HeroVideoCarousel({ activeVideo, activeVideoIndex, videos, onLaunch, on
 
 function videoDisplayTitle(video, index = 0) {
   const title = String(video?.title || "").trim();
-  if (title && !/^\?+$/.test(title)) return title;
-  if (video?.taskId) return `Seedance 成片 ${index + 1}`;
+  const target = video?.generationTarget || {};
+  if (title && !isInternalVideoTitle(title)) return title;
+  if (target.scriptTitle && target.label) return `${target.scriptTitle} · ${target.label}`;
+  if (video?.taskId) return `爆款短剧片段 ${index + 1}`;
   return "生成后自动展示";
+}
+
+function heroVideoFrameStyle(video = {}) {
+  const ratio = video?.ratio || video?.generationTarget?.ratio || "9:16";
+  const [width, height] = String(ratio).split(":").map((value) => Number(value));
+  const safeWidth = Number.isFinite(width) && width > 0 ? width : 9;
+  const safeHeight = Number.isFinite(height) && height > 0 ? height : 16;
+  return {
+    "--hero-video-aspect-ratio": `${safeWidth} / ${safeHeight}`,
+  };
+}
+
+function isInternalVideoTitle(title = "") {
+  const text = String(title || "").trim();
+  const legacyBrandTitle = new RegExp("Seed" + "ance\\s*成片", "i");
+  const legacyModelTitle = new RegExp("doubao-" + "seedance", "i");
+  return !text || /^\?+$/.test(text) || legacyBrandTitle.test(text) || legacyModelTitle.test(text) || /^未命名成片/i.test(text);
+}
+
+function videoAdLine(video = {}) {
+  const target = video.generationTarget || {};
+  if (target?.label) return `${target.label}，从剧本直接生成可预览成片`;
+  return "把复仇、逆袭、职场反杀这类创意，一键推进到可剪辑的真实短视频";
+}
+
+function videoThumbLine(video = {}) {
+  const target = video.generationTarget || {};
+  if (target?.label) return target.label;
+  if (video.downloadedAt) return "已入库 · 可继续生成同系列";
+  return "剧本直出 · 首页自动轮播";
 }

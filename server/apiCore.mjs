@@ -1,6 +1,8 @@
 import crypto from "node:crypto";
 import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import net from "node:net";
 import path from "node:path";
+import tls from "node:tls";
 import {
   appendAiLogToDatabase,
   appendCampaignResultFromPublicApi,
@@ -40,6 +42,7 @@ import {
   revokePublicApiToken,
   resetPassword,
   updateNotificationDeliveryStatus,
+  updateNotificationDeliveryStatusById,
   updateTeamMemberInDatabase,
   writeWorkspaceToDatabase,
   updateProjectInDatabase,
@@ -48,7 +51,8 @@ import { lastTrendUpdated, marketNotes, templateSignals, trendTags } from "../sr
 
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
-const DEFAULT_SCRIPT_AI_TIMEOUT_MS = 70_000;
+const DEFAULT_SCRIPT_AI_TIMEOUT_MS = 120_000;
+const DEFAULT_SCRIPT_AI_MAX_TOKENS = 8_000;
 const DEFAULT_SCRIPT_AI_MODEL = "deepseek-chat";
 const DEFAULT_SCRIPT_AI_PROVIDER = "DeepSeek";
 const DEFAULT_SCRIPT_AI_BASE_URL = "https://api.deepseek.com";
@@ -246,7 +250,7 @@ function buildStorageMigrationPlan(env = {}) {
   const databaseUrl = String(env.DJCYTOOLS_DATABASE_URL || "");
   const target = databaseUrl.startsWith("postgres://") || databaseUrl.startsWith("postgresql://") ? "postgresql" : "sqlite";
   return {
-    current: "sqlite",
+    current: target,
     target,
     readyForMultiInstance: target === "postgresql",
     tables: [
@@ -287,6 +291,184 @@ function getNotificationWebhookUrl(env = {}) {
     return ["http:", "https:"].includes(url.protocol) ? url.toString() : "";
   } catch {
     return "";
+  }
+}
+
+function getSmtpConfig(env = {}) {
+  const host = String(env.DJCYTOOLS_SMTP_HOST || "").trim();
+  const from = String(env.DJCYTOOLS_SMTP_FROM || env.DJCYTOOLS_SMTP_USER || "").trim();
+  if (!host || !from) return null;
+  const port = Number(env.DJCYTOOLS_SMTP_PORT || (String(env.DJCYTOOLS_SMTP_SECURE || "").toLowerCase() === "true" ? 465 : 587));
+  return {
+    host,
+    port: Number.isFinite(port) && port > 0 ? port : 587,
+    secure: String(env.DJCYTOOLS_SMTP_SECURE || "").toLowerCase() === "true" || port === 465,
+    starttls: String(env.DJCYTOOLS_SMTP_STARTTLS || "true").toLowerCase() !== "false",
+    user: String(env.DJCYTOOLS_SMTP_USER || "").trim(),
+    password: String(env.DJCYTOOLS_SMTP_PASSWORD || "").trim(),
+    from,
+    timeoutMs: Number(env.DJCYTOOLS_SMTP_TIMEOUT_MS || env.DJCYTOOLS_NOTIFICATION_TIMEOUT_MS || DEFAULT_NOTIFICATION_TIMEOUT_MS),
+  };
+}
+
+function isEmailDeliveryConfigured(env = {}) {
+  return Boolean(getSmtpConfig(env));
+}
+
+function shouldExposeAuthTokens(env = {}) {
+  const explicit = String(env.DJCYTOOLS_AUTH_EXPOSE_TOKENS || "").trim();
+  if (explicit) return explicit === "1" || explicit.toLowerCase() === "true";
+  return !isEmailDeliveryConfigured(env) && !getNotificationWebhookUrl(env);
+}
+
+function assertSmtpAddress(value = "", label = "邮箱") {
+  const address = String(value || "").trim();
+  if (!/^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(address)) {
+    throw createHttpError(400, `${label}格式不正确。`, "INVALID_EMAIL_ADDRESS");
+  }
+  return address;
+}
+
+function encodeMailHeader(value = "") {
+  const text = String(value || "");
+  return /^[\x20-\x7e]*$/.test(text) ? text : `=?UTF-8?B?${Buffer.from(text, "utf8").toString("base64")}?=`;
+}
+
+function normalizeMailBody(value = "") {
+  return String(value || "").replace(/\r?\n/g, "\r\n").replace(/^\./gm, "..");
+}
+
+function buildEmailMessage({ from, to, subject, body }) {
+  const timestamp = new Date().toUTCString();
+  return [
+    `From: ${assertSmtpAddress(from, "发件人")}`,
+    `To: ${assertSmtpAddress(to, "收件人")}`,
+    `Subject: ${encodeMailHeader(subject)}`,
+    `Date: ${timestamp}`,
+    `Message-ID: <${crypto.randomUUID()}@djcytools.local>`,
+    "MIME-Version: 1.0",
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: 8bit",
+    "",
+    normalizeMailBody(body),
+  ].join("\r\n");
+}
+
+function createSmtpClient(config) {
+  let socket;
+  let buffer = "";
+  let pending = [];
+
+  function attach(nextSocket) {
+    socket = nextSocket;
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      drain();
+    });
+    socket.on("error", (error) => {
+      const callbacks = pending;
+      pending = [];
+      callbacks.forEach(({ reject }) => reject(error));
+    });
+  }
+
+  function drain() {
+    if (!pending.length) return;
+    const lines = buffer.split(/\r?\n/);
+    if (!buffer.endsWith("\n")) lines.pop();
+    let consumed = 0;
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      consumed += line.length + 2;
+      if (/^\d{3} /.test(line)) {
+        const responseLines = lines.slice(0, index + 1);
+        buffer = buffer.slice(consumed);
+        const [{ resolve }] = pending.splice(0, 1);
+        resolve(responseLines.join("\n"));
+        drain();
+        return;
+      }
+    }
+  }
+
+  function readResponse() {
+    return new Promise((resolve, reject) => {
+      pending.push({ resolve, reject });
+      drain();
+    });
+  }
+
+  async function command(line, expected = [250]) {
+    socket.write(`${line}\r\n`);
+    const response = await readResponse();
+    const code = Number(response.slice(0, 3));
+    if (!expected.includes(code)) {
+      throw createHttpError(502, `SMTP 命令失败：${response}`, "SMTP_COMMAND_FAILED");
+    }
+    return response;
+  }
+
+  return {
+    attach,
+    get socket() {
+      return socket;
+    },
+    readResponse,
+    command,
+  };
+}
+
+async function openSmtpSocket(config) {
+  return new Promise((resolve, reject) => {
+    const options = { host: config.host, port: config.port, servername: config.host, timeout: config.timeoutMs };
+    const socket = config.secure ? tls.connect(options, () => resolve(socket)) : net.connect(options, () => resolve(socket));
+    socket.once("error", reject);
+    socket.once("timeout", () => {
+      socket.destroy();
+      reject(createHttpError(504, "SMTP 连接超时。", "SMTP_TIMEOUT"));
+    });
+  });
+}
+
+async function sendSmtpMail(config, { to, subject, body }) {
+  const client = createSmtpClient(config);
+  client.attach(await openSmtpSocket(config));
+  const timeout = setTimeout(() => client.socket.destroy(createHttpError(504, "SMTP 发送超时。", "SMTP_TIMEOUT")), config.timeoutMs);
+  try {
+    let response = await client.readResponse();
+    if (Number(response.slice(0, 3)) !== 220) throw createHttpError(502, `SMTP 连接失败：${response}`, "SMTP_CONNECT_FAILED");
+    response = await client.command("EHLO djcytools.local", [250]);
+
+    if (!config.secure && config.starttls && /STARTTLS/i.test(response)) {
+      await client.command("STARTTLS", [220]);
+      client.attach(tls.connect({ socket: client.socket, servername: config.host }));
+      await new Promise((resolve, reject) => {
+        client.socket.once("secureConnect", resolve);
+        client.socket.once("error", reject);
+      });
+      await client.command("EHLO djcytools.local", [250]);
+    }
+
+    if (config.user || config.password) {
+      await client.command("AUTH LOGIN", [334]);
+      await client.command(Buffer.from(config.user).toString("base64"), [334]);
+      await client.command(Buffer.from(config.password).toString("base64"), [235]);
+    }
+
+    const from = assertSmtpAddress(config.from, "发件人");
+    const recipient = assertSmtpAddress(to, "收件人");
+    await client.command(`MAIL FROM:<${from}>`, [250]);
+    await client.command(`RCPT TO:<${recipient}>`, [250, 251]);
+    await client.command("DATA", [354]);
+    client.socket.write(`${buildEmailMessage({ from, to: recipient, subject, body })}\r\n.\r\n`);
+    response = await client.readResponse();
+    if (Number(response.slice(0, 3)) !== 250) throw createHttpError(502, `SMTP 发送失败：${response}`, "SMTP_SEND_FAILED");
+    await client.command("QUIT", [221]).catch(() => {});
+    return { ok: true, response: summarizeResponseText(response), recipient };
+  } finally {
+    clearTimeout(timeout);
+    client.socket?.end();
   }
 }
 
@@ -406,6 +588,170 @@ async function deliverNotificationWebhook(rootDir, env, session, notificationId)
       error: isAbort ? "Webhook 请求超时" : error instanceof Error ? error.message : "Webhook 请求失败",
     };
   }
+}
+
+async function deliverNotificationEmailById(rootDir, env, session, notificationId) {
+  const config = getSmtpConfig(env);
+  if (!config) {
+    throw createHttpError(400, "未配置 DJCYTOOLS_SMTP_HOST / DJCYTOOLS_SMTP_FROM，无法发送邮件。", "SMTP_NOT_CONFIGURED");
+  }
+  const notification = readNotificationOutboxEntryFromDatabase(rootDir, env, session, notificationId);
+  try {
+    const result = await sendSmtpMail(config, {
+      to: notification.recipient,
+      subject: notification.subject,
+      body: notification.body,
+    });
+    const updated = updateNotificationDeliveryStatus(rootDir, env, session, notificationId, {
+      status: "sent",
+      channel: "email",
+      delivery: {
+        ok: true,
+        provider: "smtp",
+        recipient: result.recipient,
+        response: result.response,
+      },
+    });
+    appendAudit(rootDir, env, session, "notification.email_delivered", {
+      targetType: "notification",
+      targetId: notificationId,
+      recipient: notification.recipient,
+    });
+    return { ok: true, notification: updated, channel: "email" };
+  } catch (error) {
+    const updated = updateNotificationDeliveryStatus(rootDir, env, session, notificationId, {
+      status: "failed",
+      channel: "email",
+      delivery: {
+        ok: false,
+        provider: "smtp",
+        error: error instanceof Error ? error.message : "SMTP 邮件发送失败",
+      },
+    });
+    appendAudit(rootDir, env, session, "notification.email_failed", {
+      targetType: "notification",
+      targetId: notificationId,
+      recipient: notification.recipient,
+      error: error instanceof Error ? error.message : "unknown",
+    });
+    return { ok: false, notification: updated, channel: "email", error: error instanceof Error ? error.message : "SMTP 邮件发送失败" };
+  }
+}
+
+async function deliverNotificationEmailForAuth(rootDir, env, notification) {
+  const config = getSmtpConfig(env);
+  if (!config || !notification?.id) return { configured: Boolean(config), attempted: false, ok: false, channel: "" };
+  try {
+    const result = await sendSmtpMail(config, {
+      to: notification.recipient,
+      subject: notification.subject,
+      body: notification.body,
+    });
+    const updated = updateNotificationDeliveryStatusById(rootDir, env, notification.id, {
+      status: "sent",
+      channel: "email",
+      delivery: {
+        ok: true,
+        provider: "smtp",
+        recipient: result.recipient,
+        response: result.response,
+      },
+    });
+    return { configured: true, attempted: true, ok: true, channel: "email", notification: updated };
+  } catch (error) {
+    const updated = updateNotificationDeliveryStatusById(rootDir, env, notification.id, {
+      status: "failed",
+      channel: "email",
+      delivery: {
+        ok: false,
+        provider: "smtp",
+        error: error instanceof Error ? error.message : "SMTP 邮件发送失败",
+      },
+    });
+    return {
+      configured: true,
+      attempted: true,
+      ok: false,
+      channel: "email",
+      notification: updated,
+      error: error instanceof Error ? error.message : "SMTP 邮件发送失败",
+    };
+  }
+}
+
+async function deliverNotificationWebhookForAuth(rootDir, env, notification) {
+  const webhookUrl = getNotificationWebhookUrl(env);
+  if (!webhookUrl || !notification?.id) return { configured: Boolean(webhookUrl), attempted: false, ok: false, channel: "" };
+  const timestamp = new Date().toISOString();
+  const payload = {
+    event: "djcytools.notification",
+    sentAt: timestamp,
+    notification: {
+      id: notification.id,
+      kind: notification.kind,
+      recipient: notification.recipient,
+      subject: notification.subject,
+      body: notification.body,
+      targetType: notification.targetType,
+      targetId: notification.targetId,
+      createdAt: notification.createdAt,
+    },
+  };
+  const body = JSON.stringify(payload);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Number(env.DJCYTOOLS_NOTIFICATION_TIMEOUT_MS || DEFAULT_NOTIFICATION_TIMEOUT_MS));
+  try {
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      signal: controller.signal,
+      headers: createWebhookHeaders(env, body, timestamp),
+      body,
+    });
+    const responseText = summarizeResponseText(await response.text().catch(() => ""));
+    clearTimeout(timeout);
+    const updated = updateNotificationDeliveryStatusById(rootDir, env, notification.id, {
+      status: response.ok ? "sent" : "failed",
+      channel: "webhook",
+      delivery: {
+        ok: response.ok,
+        httpStatus: response.status,
+        webhook: redactWebhookUrl(webhookUrl),
+        response: responseText,
+      },
+    });
+    return { configured: true, attempted: true, ok: response.ok, channel: "webhook", notification: updated, httpStatus: response.status };
+  } catch (error) {
+    clearTimeout(timeout);
+    const isAbort = error?.name === "AbortError";
+    const updated = updateNotificationDeliveryStatusById(rootDir, env, notification.id, {
+      status: "failed",
+      channel: "webhook",
+      delivery: {
+        ok: false,
+        webhook: redactWebhookUrl(webhookUrl),
+        error: isAbort ? "Webhook 请求超时" : error instanceof Error ? error.message : "Webhook 请求失败",
+      },
+    });
+    return {
+      configured: true,
+      attempted: true,
+      ok: false,
+      channel: "webhook",
+      notification: updated,
+      error: isAbort ? "Webhook 请求超时" : error instanceof Error ? error.message : "Webhook 请求失败",
+    };
+  }
+}
+
+async function deliverNotificationForAuth(rootDir, env, notification) {
+  if (isEmailDeliveryConfigured(env)) return deliverNotificationEmailForAuth(rootDir, env, notification);
+  if (getNotificationWebhookUrl(env)) return deliverNotificationWebhookForAuth(rootDir, env, notification);
+  return { configured: false, attempted: false, ok: false, channel: "" };
+}
+
+async function deliverNotification(rootDir, env, session, notificationId) {
+  if (isEmailDeliveryConfigured(env)) return deliverNotificationEmailById(rootDir, env, session, notificationId);
+  return deliverNotificationWebhook(rootDir, env, session, notificationId);
 }
 
 function buildPublicOpenApiSpec(env = {}) {
@@ -642,6 +988,17 @@ function estimateCost(usage = {}) {
   return Number(((inputTokens / 1_000_000) * inputRatePerMillion + (outputTokens / 1_000_000) * outputRatePerMillion).toFixed(6));
 }
 
+function combineUsage(...items) {
+  const combined = {};
+  for (const usage of items) {
+    if (!usage || typeof usage !== "object") continue;
+    for (const [key, value] of Object.entries(usage)) {
+      if (typeof value === "number") combined[key] = Number(combined[key] || 0) + value;
+    }
+  }
+  return combined;
+}
+
 function getScriptAiProviderConfig(env = {}) {
   const endpoint = env.DJCYTOOLS_SCRIPT_ENDPOINT || env.DEEPSEEK_ENDPOINT || "";
   const genericProvider = String(env.DJCYTOOLS_AI_PROVIDER || "").toLowerCase();
@@ -654,6 +1011,7 @@ function getScriptAiProviderConfig(env = {}) {
     providerName: env.DJCYTOOLS_SCRIPT_PROVIDER || env.DEEPSEEK_PROVIDER || DEFAULT_SCRIPT_AI_PROVIDER,
     protocol: "chat_completions",
     timeoutMs: Number(env.DJCYTOOLS_SCRIPT_TIMEOUT_MS || env.DEEPSEEK_TIMEOUT_MS || DEFAULT_SCRIPT_AI_TIMEOUT_MS),
+    maxTokens: Number(env.DJCYTOOLS_SCRIPT_MAX_TOKENS || env.DEEPSEEK_MAX_TOKENS || DEFAULT_SCRIPT_AI_MAX_TOKENS),
   };
 }
 
@@ -698,18 +1056,20 @@ function aiEndpointUrl(config = {}) {
   return config.protocol === "chat_completions" ? chatCompletionsUrl(config) : responsesUrl(config);
 }
 
-function buildAiRequestBody(config, prompt) {
+function buildAiRequestBody(config, prompt, options = {}) {
+  const temperature = Number.isFinite(Number(options.temperature)) ? Number(options.temperature) : 0.82;
+  const maxTokens = Number(options.maxTokens || config.maxTokens || DEFAULT_SCRIPT_AI_MAX_TOKENS);
   if (config.protocol === "chat_completions") {
     return {
       model: config.model,
-      temperature: 0.82,
-      max_tokens: 3600,
+      temperature,
+      max_tokens: maxTokens,
       response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
           content:
-            "你是短剧出海内容工厂的资深编剧和投流脚本策划，擅长把市场情绪、爆款模板和剧集结构转成可拍摄脚本。无论目标市场是什么，最终输出都必须是简体中文 JSON。",
+            "你是短剧出海内容工厂的资深编剧和投流脚本策划。只返回一个合法 JSON 对象：第一个字符必须是 {，最后一个字符必须是 }。不要 Markdown，不要 ```json 代码块，不要解释文字。所有字符串中的换行必须使用 \\n 转义。",
         },
         { role: "user", content: prompt },
       ],
@@ -718,8 +1078,8 @@ function buildAiRequestBody(config, prompt) {
 
   return {
     model: config.model,
-    temperature: 0.82,
-    max_output_tokens: 3600,
+    temperature,
+    max_output_tokens: maxTokens,
     input: [
       {
         role: "user",
@@ -728,7 +1088,7 @@ function buildAiRequestBody(config, prompt) {
             type: "input_text",
             text: [
               "系统要求：你是短剧出海内容工厂的资深编剧和投流脚本策划，擅长把市场情绪、爆款模板和剧集结构转成可拍摄脚本。",
-              "无论目标市场是什么，最终输出都必须是简体中文 JSON，不要输出 Markdown。",
+              "只返回一个合法 JSON 对象：第一个字符必须是 {，最后一个字符必须是 }。不要 Markdown，不要 ```json 代码块，不要解释文字。所有字符串中的换行必须使用 \\n 转义。",
               "",
               prompt,
             ].join("\n"),
@@ -754,23 +1114,357 @@ function extractAiText(data = {}) {
   return "";
 }
 
-function parseAiJsonContent(content = "") {
-  const text = String(content || "").trim();
-  try {
-    return JSON.parse(text);
-  } catch {
-    const withoutFence = text.replace(/^```(?:json)?\s*/i, "").replace(/```$/i, "").trim();
-    try {
-      return JSON.parse(withoutFence);
-    } catch {
-      const start = withoutFence.indexOf("{");
-      const end = withoutFence.lastIndexOf("}");
-      if (start >= 0 && end > start) {
-        return JSON.parse(withoutFence.slice(start, end + 1));
+const AI_JSON_PAYLOAD_FIELDS = new Set([
+  "titleCandidates",
+  "selectedTitle",
+  "logline",
+  "sellingPoints",
+  "characters",
+  "outline",
+  "episodes",
+  "adHooks",
+  "name",
+  "status",
+  "format",
+  "shots",
+]);
+
+const AI_JSON_WRAPPER_KEYS = ["content", "data", "payload", "result", "script", "project", "version", "output"];
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function stripMarkdownFence(text = "") {
+  const trimmed = String(text || "").trim();
+  const fencedBlock = trimmed.match(/```(?:json|JSON|javascript|js)?\s*([\s\S]*?)```/);
+  if (fencedBlock?.[1]) return fencedBlock[1].trim();
+  return trimmed.replace(/^json\s*\n/i, "").trim();
+}
+
+function extractBalancedJsonObject(text = "") {
+  const source = String(text || "");
+  const start = source.indexOf("{");
+  if (start < 0) return "";
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < source.length; index += 1) {
+    const char = source[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
       }
-      throw new Error("AI content is not valid JSON");
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+    } else if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, index + 1).trim();
     }
   }
+
+  const end = source.lastIndexOf("}");
+  return end > start ? source.slice(start, end + 1).trim() : source.slice(start).trim();
+}
+
+function escapeBareControlCharactersInStrings(text = "") {
+  const source = String(text || "");
+  let output = "";
+  let inString = false;
+  let escaped = false;
+
+  for (const char of source) {
+    if (!inString) {
+      output += char;
+      if (char === "\"") inString = true;
+      continue;
+    }
+
+    if (escaped) {
+      output += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      output += char;
+      escaped = true;
+      continue;
+    }
+    if (char === "\"") {
+      output += char;
+      inString = false;
+      continue;
+    }
+    if (char === "\n") {
+      output += "\\n";
+      continue;
+    }
+    if (char === "\r") {
+      output += "\\r";
+      continue;
+    }
+    if (char === "\t") {
+      output += "\\t";
+      continue;
+    }
+
+    const code = char.codePointAt(0);
+    if (code < 0x20) {
+      output += `\\u${code.toString(16).padStart(4, "0")}`;
+    } else {
+      output += char;
+    }
+  }
+
+  return output;
+}
+
+function removeTrailingCommasOutsideStrings(text = "") {
+  const source = String(text || "");
+  let output = "";
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (inString) {
+      output += char;
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+      output += char;
+      continue;
+    }
+    if (char === ",") {
+      let cursor = index + 1;
+      while (/\s/.test(source[cursor] || "")) cursor += 1;
+      if (source[cursor] === "}" || source[cursor] === "]") continue;
+    }
+    output += char;
+  }
+
+  return output;
+}
+
+function buildJsonRepairCandidates(text = "") {
+  const escaped = escapeBareControlCharactersInStrings(text);
+  return Array.from(new Set([
+    text,
+    removeTrailingCommasOutsideStrings(text),
+    escaped,
+    removeTrailingCommasOutsideStrings(escaped),
+  ].map((item) => String(item || "").trim()).filter(Boolean)));
+}
+
+function findAiJsonPayload(value, depth = 0) {
+  if (!isPlainObject(value) || depth > 3) return null;
+  if (Object.keys(value).some((key) => AI_JSON_PAYLOAD_FIELDS.has(key))) return value;
+
+  for (const key of AI_JSON_WRAPPER_KEYS) {
+    const nested = value[key];
+    if (isPlainObject(nested)) {
+      const found = findAiJsonPayload(nested, depth + 1);
+      if (found) return found;
+    }
+    if (typeof nested === "string" && nested.trim().startsWith("{")) {
+      try {
+        const found = findAiJsonPayload(JSON.parse(nested), depth + 1);
+        if (found) return found;
+      } catch {
+        // Keep looking through other wrapper keys.
+      }
+    }
+  }
+
+  return null;
+}
+
+function unwrapAiJsonPayload(value) {
+  return findAiJsonPayload(value) || value;
+}
+
+function parseAiJsonContent(content = "") {
+  const text = String(content || "").replace(/^\uFEFF/, "").trim();
+  const candidates = [
+    text,
+    stripMarkdownFence(text),
+    extractBalancedJsonObject(text),
+    extractBalancedJsonObject(stripMarkdownFence(text)),
+  ].filter(Boolean);
+
+  let lastError = null;
+  for (const candidate of Array.from(new Set(candidates))) {
+    for (const variant of buildJsonRepairCandidates(candidate)) {
+      try {
+        return unwrapAiJsonPayload(JSON.parse(variant));
+      } catch (error) {
+        lastError = error;
+      }
+    }
+  }
+
+  throw lastError || new Error("AI content is not valid JSON");
+}
+
+function buildJsonRepairPrompt({ originalPrompt = "", invalidContent = "" }) {
+  return [
+    "下面是一段短剧项目 JSON，但它可能被截断、包含未转义换行、尾逗号、Markdown 或解释文字。",
+    "请把它修复或补全为一个严格合法的 JSON 对象。只输出 JSON，不要 Markdown，不要解释。",
+    "必须包含字段：titleCandidates(string[]), selectedTitle(string), logline(string), sellingPoints(string[]), characters(array), outline(array), episodes(array), adHooks(string[])。",
+    "characters 每项字段：role,name,archetype,motive,secret。",
+    "outline 每项字段：stage,summary。",
+    "episodes 只保留前 3 集，每项字段：number,title,hook,beat,script,dialogue(string[])。",
+    "所有字符串必须是简体中文；字符串内部换行必须使用 \\n 转义。",
+    `原始任务输入：${compactText(originalPrompt, 5000)}`,
+    `待修复内容：${compactText(invalidContent, 12000)}`,
+  ].join("\n");
+}
+
+async function fetchAiJsonContent({ aiConfig, prompt, repairContent = "" }) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), aiConfig.timeoutMs);
+  const requestPrompt = repairContent ? buildJsonRepairPrompt({ originalPrompt: prompt, invalidContent: repairContent }) : prompt;
+  try {
+    const response = await fetch(aiEndpointUrl(aiConfig), {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${aiConfig.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(buildAiRequestBody(aiConfig, requestPrompt, repairContent ? { temperature: 0, maxTokens: aiConfig.maxTokens } : {})),
+    });
+    const data = await response.json().catch(() => ({}));
+    return {
+      response,
+      data,
+      content: extractAiText(data),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function repairAiJsonContent({ aiConfig, prompt, invalidContent }) {
+  const repaired = await fetchAiJsonContent({ aiConfig, prompt, repairContent: invalidContent });
+  if (!repaired.response.ok) {
+    throw new Error(repaired.data?.error?.message || `${aiConfig.providerName} JSON repair request failed`);
+  }
+  if (!repaired.content) throw new Error(`${aiConfig.providerName} JSON repair returned empty content`);
+  return {
+    data: repaired.data,
+    content: parseAiJsonContent(repaired.content),
+  };
+}
+
+function ensureStringArray(value, fallback = []) {
+  return Array.isArray(value) ? value.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim()) : fallback;
+}
+
+function normalizeFallbackCharacters(value = []) {
+  const items = Array.isArray(value) ? value : [];
+  return items.slice(0, 5).map((item, index) => ({
+    role: String(item?.role || `角色${index + 1}`),
+    name: String(item?.name || `角色${index + 1}`),
+    archetype: String(item?.archetype || "短剧功能角色"),
+    motive: String(item?.motive || "推动核心冲突"),
+    secret: String(item?.secret || "持有关键反转信息"),
+  }));
+}
+
+function normalizeFallbackOutline(value = [], template = {}) {
+  const items = Array.isArray(value) ? value : [];
+  const fallback = items.length ? items : [
+    { stage: "阶段 1", summary: `建立人物关系和核心误会：${template.beat || "开场给出强冲突。"}` },
+    { stage: "阶段 2", summary: "主角被压迫后开始收集证据，反派持续误判。" },
+    { stage: "阶段 3", summary: "主角公开反击，留下下一段真实视频可拍的强钩子。" },
+  ];
+  return fallback.slice(0, 5).map((item, index) => ({
+    stage: String(item?.stage || `阶段 ${index + 1}`),
+    summary: String(item?.summary || "推进主线冲突和反转。"),
+  }));
+}
+
+function normalizeFallbackEpisodes(value = [], instruction = "") {
+  const items = Array.isArray(value) ? value : [];
+  const fallback = items.length ? items : [
+    {
+      number: 1,
+      title: "当众受辱",
+      hook: "主角被当众羞辱，却发现自己手里握着翻盘证据。",
+      beat: "前 10 秒给冲突，30 秒内给证据，结尾留身份反转。",
+      script: "主角在众人面前被误解和驱赶，她没有解释，只把关键证据握在手里。镜头切到反派得意的表情，再切回主角冷静离场。",
+      dialogue: ["主角：从现在开始，轮到我说了算。"],
+    },
+    {
+      number: 2,
+      title: "证据出现",
+      hook: "反派以为局面已定，主角却拿出第一份证据。",
+      beat: "冲突升级，主角小胜，反派误判。",
+      script: "主角找到旧记录，证明自己不是背叛者。反派试图压住消息，却让更多人开始怀疑真相。",
+      dialogue: ["反派：你没有资格回来。", "主角：资格不是你给的。"],
+    },
+    {
+      number: 3,
+      title: "开始清算",
+      hook: "会议大屏亮起，所有人第一次看见真相。",
+      beat: "公开反击，强留悬念。",
+      script: "主角把证据投到大屏幕，所有人沉默。反派冲上来阻止，却发现证据已经同步给更多人。",
+      dialogue: ["主角：这只是第一份。"],
+    },
+  ];
+  return fallback.slice(0, 3).map((item, index) => ({
+    number: Number(item?.number || index + 1),
+    title: String(item?.title || `第 ${index + 1} 集`),
+    hook: String(item?.hook || `按「${instruction || "当前方向"}」强化开场钩子。`),
+    beat: String(item?.beat || "定调、冲突、钩子。"),
+    script: String(item?.script || "围绕核心误会和反击推进。"),
+    dialogue: ensureStringArray(item?.dialogue, ["主角：真相会自己开口。"]),
+  }));
+}
+
+function buildServerFallbackScriptContent(body = {}) {
+  const current = isPlainObject(body.currentVersion) ? body.currentVersion : {};
+  const template = body.template || {};
+  const brief = body.brief || {};
+  const instruction = String(body.instruction || "").trim();
+  const title = String(current.selectedTitle || brief.title || `${template.name || "短剧"}改写版`);
+  const titleCandidates = ensureStringArray(current.titleCandidates, [title]).slice(0, 8);
+  const sellingPoints = ensureStringArray(current.sellingPoints, []);
+  const fallbackPoint = instruction ? `已按「${instruction}」生成结构化兜底版本，可继续编辑或再次改写。` : "已生成结构化兜底版本，可继续编辑或再次改写。";
+  return {
+    titleCandidates: titleCandidates.includes(title) ? titleCandidates : [title, ...titleCandidates].slice(0, 8),
+    selectedTitle: title,
+    logline: String(current.logline || brief.painPoint || template.premise || "主角被误解后反击，逐步夺回主动权。"),
+    sellingPoints: sellingPoints.length ? sellingPoints : [fallbackPoint],
+    characters: normalizeFallbackCharacters(current.characters),
+    outline: normalizeFallbackOutline(current.outline, template),
+    episodes: normalizeFallbackEpisodes(current.episodes, instruction),
+    adHooks: ensureStringArray(current.adHooks, [
+      "前 5 秒：主角被当众羞辱，下一秒拿出反击证据。",
+      "他们以为她输了，其实她刚开始算账。",
+      "如果被最亲近的人背叛，你会解释，还是翻盘？",
+    ]),
+  };
 }
 
 function buildPrompt({ brief, params, template, market, instruction, currentVersion }) {
@@ -954,6 +1648,44 @@ function buildRealVideoPrompt({ project = {}, version = {}, sample = {}, shot = 
   return textParts.filter(Boolean).join(", ");
 }
 
+function buildRealVideoTitle({ project = {}, version = {}, sample = {}, shot = {} }) {
+  const episode = pickEpisodeForShot(version, shot);
+  const title = compactText(version.selectedTitle || project.name || sample.name || "未命名短剧", 48);
+  const episodeNumber = episode.number || shot.episodeNumber || shot.episode || "";
+  const episodeTitle = compactText(episode.title || shot.episodeTitle || shot.title || shot.subtitle || "", 34);
+  if (episodeNumber && episodeTitle && episodeTitle !== title) return `${title} · 第${episodeNumber}集 ${episodeTitle}`;
+  if (episodeTitle && episodeTitle !== title) return `${title} · ${episodeTitle}`;
+  return title;
+}
+
+function buildRealVideoGenerationTarget({ project = {}, version = {}, sample = {}, shot = {}, requestBody = {} }) {
+  const episode = pickEpisodeForShot(version, shot);
+  const scriptTitle = compactText(version.selectedTitle || version.name || project.name || sample.name || "未命名短剧", 60);
+  const episodeNumber = episode.number || shot.episodeNumber || shot.episode || 1;
+  const episodeTitle = compactText(episode.title || shot.episodeTitle || shot.title || shot.subtitle || "剧本片段", 40);
+  const shotPosition = shot.position || shot.index || 1;
+  const shotTitle = compactText(shot.title || shot.subtitle || shot.frame || episodeTitle, 48);
+  const subtitle = compactText(shot.subtitle || shot.voiceover || "", 80);
+  const frame = compactText(shot.frame || shot.visualPrompt || sample.logline || version.logline || "", 110);
+  const label = `第${episodeNumber}集 ${episodeTitle} · 镜头 ${shotPosition}`;
+  const detail = [subtitle ? `字幕：${subtitle}` : "", frame ? `画面：${frame}` : ""].filter(Boolean).join("；");
+  return {
+    projectId: project.id || "",
+    versionId: version.id || "",
+    sampleId: sample.id || "",
+    shotId: shot.id || "",
+    scriptTitle,
+    episodeNumber,
+    episodeTitle,
+    shotPosition,
+    shotTitle,
+    label,
+    detail,
+    duration: requestBody.duration || SEEDANCE_2_MAX_DURATION_SECONDS,
+    ratio: requestBody.ratio || sample.format || "",
+  };
+}
+
 function buildReferenceContent(references = {}) {
   const content = [];
   const imageUrls = (Array.isArray(references.imageUrls) ? references.imageUrls : [references.firstFrameImageUrl, references.endFrameImageUrl])
@@ -1031,6 +1763,33 @@ function buildRealVideoTaskBody(config, body = {}) {
   };
 }
 
+function findRealVideoTitle(value) {
+  if (!value || typeof value !== "object") return "";
+  for (const key of ["title", "name", "display_title", "displayTitle"]) {
+    if (typeof value[key] === "string" && value[key].trim()) return value[key].trim();
+  }
+  const metadata = value.metadata || value.meta || value.extra || value.request || value.input;
+  if (metadata && typeof metadata === "object") {
+    const title = findRealVideoTitle(metadata);
+    if (title) return title;
+  }
+  return "";
+}
+
+function inferRealVideoTitleFromRaw(raw = {}) {
+  const directTitle = findRealVideoTitle(raw);
+  if (directTitle) return compactText(directTitle, 96);
+  const content = Array.isArray(raw.content) ? raw.content : Array.isArray(raw.data?.content) ? raw.data.content : [];
+  const text = content.find((item) => item?.type === "text" && typeof item.text === "string")?.text || "";
+  const match = text.match(/剧名[:：]\s*([^。，,]+)/);
+  return match?.[1] ? compactText(match[1], 96) : "";
+}
+
+function cleanGeneratedVideoTitle(value = "") {
+  const title = String(value || "").trim();
+  return title && !/^\?+$/.test(title) ? title : "";
+}
+
 function findVideoUrl(value) {
   if (!value || typeof value !== "object") return "";
   if (typeof value.video_url === "string") return value.video_url;
@@ -1096,6 +1855,7 @@ function normalizeRealVideoTask(data = {}) {
     errorCode,
     errorHint: hint?.message || "",
     errorHelpUrl: hint?.url || "",
+    title: findRealVideoTitle(task) || findRealVideoTitle(data),
     raw: data,
   };
 }
@@ -1182,6 +1942,7 @@ async function listGeneratedVideos({ rootDir }) {
     const taskId = entry.name.replace(/\.json$/i, "").replace(/[^a-zA-Z0-9_-]/g, "");
     if (!taskId) continue;
     try {
+      await access(path.join(dir, `${taskId}.mp4`));
       const meta = JSON.parse(await readFile(path.join(dir, entry.name), "utf8"));
       videos.push({
         taskId,
@@ -1195,7 +1956,8 @@ async function listGeneratedVideos({ rootDir }) {
         ratio: meta.ratio || "",
         resolution: meta.resolution || "",
         downloadedAt: meta.downloadedAt || "",
-        title: meta.title || "",
+        title: cleanGeneratedVideoTitle(meta.title) || inferRealVideoTitleFromRaw(meta.raw || meta) || "",
+        generationTarget: meta.generationTarget || null,
       });
     } catch {
       // Metadata can be rewritten while a task finishes; skip partial files.
@@ -1228,6 +1990,8 @@ async function persistGeneratedVideo({ rootDir, task = {}, provider = "", model 
     await writeFile(videoPath, buffer);
   }
   const raw = task.raw && typeof task.raw === "object" ? task.raw : {};
+  const title = cleanGeneratedVideoTitle(existingMeta.title) || cleanGeneratedVideoTitle(task.title) || cleanGeneratedVideoTitle(raw.title) || inferRealVideoTitleFromRaw(raw);
+  const generationTarget = existingMeta.generationTarget || task.generationTarget || null;
   await writeFile(metaPath, JSON.stringify({
     taskId: safeId,
     status: task.status,
@@ -1239,9 +2003,49 @@ async function persistGeneratedVideo({ rootDir, task = {}, provider = "", model 
     duration: raw.duration || SEEDANCE_2_MAX_DURATION_SECONDS,
     ratio: raw.ratio || "",
     resolution: raw.resolution || "",
-    title: existingMeta.title || raw.title || "",
+    title,
+    generationTarget,
   }, null, 2), "utf8");
   return generatedVideoApiPath(safeId);
+}
+
+async function writePendingGeneratedVideoMeta({ rootDir, task = {}, provider = "", model = "", title = "", requestBody = {}, generationTarget = null }) {
+  const safeId = String(task.id || "").replace(/[^a-zA-Z0-9_-]/g, "");
+  if (!safeId) return;
+  const dir = path.join(rootDir, "data", "generated-videos");
+  const metaPath = path.join(dir, `${safeId}.json`);
+  await mkdir(dir, { recursive: true });
+  let existingMeta = {};
+  try {
+    existingMeta = JSON.parse(await readFile(metaPath, "utf8"));
+  } catch {
+    existingMeta = {};
+  }
+  await writeFile(metaPath, JSON.stringify({
+    ...existingMeta,
+    taskId: safeId,
+    status: task.status || existingMeta.status || "submitted",
+    provider: provider || existingMeta.provider || "",
+    model: model || existingMeta.model || "",
+    localVideoUrl: existingMeta.localVideoUrl || generatedVideoApiPath(safeId),
+    sourceVideoUrl: existingMeta.sourceVideoUrl || task.videoUrl || "",
+    downloadedAt: existingMeta.downloadedAt || "",
+    duration: requestBody.duration || existingMeta.duration || SEEDANCE_2_MAX_DURATION_SECONDS,
+    ratio: requestBody.ratio || existingMeta.ratio || "",
+    resolution: requestBody.resolution || existingMeta.resolution || "",
+    title: cleanGeneratedVideoTitle(existingMeta.title) || cleanGeneratedVideoTitle(title) || cleanGeneratedVideoTitle(task.title) || "",
+    generationTarget: existingMeta.generationTarget || generationTarget || null,
+  }, null, 2), "utf8");
+}
+
+async function readGeneratedVideoMeta({ rootDir, taskId = "" }) {
+  const safeId = String(taskId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+  if (!safeId) return {};
+  try {
+    return JSON.parse(await readFile(path.join(rootDir, "data", "generated-videos", `${safeId}.json`), "utf8"));
+  } catch {
+    return {};
+  }
 }
 
 async function handleGenerateScript({ req, res, env, rootDir, session }) {
@@ -1259,23 +2063,34 @@ async function handleGenerateScript({ req, res, env, rootDir, session }) {
   const prompt = buildPrompt(body);
   const model = aiConfig.model;
   const requestId = `ai_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), aiConfig.timeoutMs);
 
   try {
-    const response = await fetch(aiEndpointUrl(aiConfig), {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${aiConfig.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(buildAiRequestBody(aiConfig, prompt)),
-    });
-    clearTimeout(timeout);
-
-    const data = await response.json().catch(() => ({}));
+    const initial = await fetchAiJsonContent({ aiConfig, prompt });
+    const { response, data } = initial;
     if (!response.ok) {
+      const providerStatus = Number(response.status || 0);
+      if (![401, 403].includes(providerStatus)) {
+        const fallbackContent = buildServerFallbackScriptContent(body);
+        await appendAiLog(rootDir, {
+          id: requestId,
+          status: "fallback",
+          model,
+          instruction: body.instruction || "generate",
+          error: data?.error?.message || `${aiConfig.providerName} request failed; returned server fallback`,
+          durationMs: Date.now() - startedAt,
+          createdAt: new Date().toISOString(),
+        }, env, session);
+        sendJson(res, 200, {
+          requestId,
+          content: fallbackContent,
+          usage: {},
+          model,
+          costUsd: 0,
+          fallback: "server_fallback",
+          warning: data?.error?.message || `${aiConfig.providerName} request failed; server fallback returned`,
+        });
+        return true;
+      }
       await appendAiLog(rootDir, {
         id: requestId,
         status: "error",
@@ -1294,44 +2109,47 @@ async function handleGenerateScript({ req, res, env, rootDir, session }) {
       return true;
     }
 
-    const content = extractAiText(data);
-    if (!content) {
-      sendJson(res, 502, { error: `${aiConfig.providerName} returned empty content`, code: "AI_EMPTY_CONTENT", requestId, detail: data });
-      return true;
-    }
-
+    const content = initial.content;
     let parsedContent;
-    try {
-      parsedContent = parseAiJsonContent(content);
-    } catch {
-      await appendAiLog(rootDir, {
-        id: requestId,
-        status: "error",
-        model: data.model || model,
-        instruction: body.instruction || "generate",
-        error: `${aiConfig.providerName} returned non-JSON content`,
-        durationMs: Date.now() - startedAt,
-        createdAt: new Date().toISOString(),
-      }, env, session);
-      sendJson(res, 502, {
-        error: `${aiConfig.providerName} 返回内容不是合法 JSON，已触发前端本地兜底。`,
-        code: "AI_INVALID_JSON",
-        requestId,
-      });
-      return true;
+    let usage = data.usage || {};
+    let responseModel = data.model || model;
+    let recovery = "";
+    let warning = "";
+
+    if (!content) {
+      parsedContent = buildServerFallbackScriptContent(body);
+      recovery = "server_fallback";
+      warning = `${aiConfig.providerName} returned empty content; server fallback returned`;
+    } else {
+      try {
+        parsedContent = parseAiJsonContent(content);
+      } catch (parseError) {
+        try {
+          const repaired = await repairAiJsonContent({ aiConfig, prompt, invalidContent: content });
+          parsedContent = repaired.content;
+          usage = combineUsage(data.usage, repaired.data.usage);
+          responseModel = repaired.data.model || responseModel;
+          recovery = "json_repair";
+        } catch (repairError) {
+          parsedContent = buildServerFallbackScriptContent(body);
+          recovery = "server_fallback";
+          warning = repairError instanceof Error ? repairError.message : parseError instanceof Error ? parseError.message : `${aiConfig.providerName} returned non-JSON content`;
+        }
+      }
     }
 
-    const usage = data.usage || {};
     const costUsd = estimateCost(usage);
     await appendAiLog(rootDir, {
       id: requestId,
-      status: "success",
-      model: data.model || model,
+      status: recovery === "server_fallback" ? "fallback" : "success",
+      model: responseModel,
       instruction: body.instruction || "generate",
       market: body.market?.label || body.brief?.market,
       template: body.template?.name || body.brief?.templateId,
       usage,
       costUsd,
+      recovery,
+      error: recovery === "server_fallback" ? warning || `${aiConfig.providerName} returned non-JSON content; server fallback returned` : undefined,
       durationMs: Date.now() - startedAt,
       createdAt: new Date().toISOString(),
     }, env, session);
@@ -1340,26 +2158,32 @@ async function handleGenerateScript({ req, res, env, rootDir, session }) {
       requestId,
       content: parsedContent,
       usage,
-      model: data.model || model,
+      model: responseModel,
       costUsd,
+      repaired: recovery === "json_repair",
+      fallback: recovery === "server_fallback" ? "server_fallback" : undefined,
+      warning: warning || undefined,
     });
     return true;
   } catch (error) {
-    clearTimeout(timeout);
+    const fallbackContent = buildServerFallbackScriptContent(body);
     await appendAiLog(rootDir, {
       id: requestId,
-      status: "error",
+      status: "fallback",
       model,
       instruction: body.instruction || "generate",
-      error: error instanceof Error ? error.message : `Unknown ${aiConfig.providerName} API error`,
+      error: error instanceof Error ? `${error.message}; returned server fallback` : `Unknown ${aiConfig.providerName} API error; returned server fallback`,
       durationMs: Date.now() - startedAt,
       createdAt: new Date().toISOString(),
     }, env, session);
-    const isAbort = error?.name === "AbortError";
-    sendJson(res, isAbort ? 504 : 500, {
-      error: isAbort ? `${aiConfig.providerName} 请求超时，请稍后重试。` : error instanceof Error ? error.message : `Unknown ${aiConfig.providerName} API error`,
-      code: isAbort ? "AI_TIMEOUT" : "AI_REQUEST_FAILED",
+    sendJson(res, 200, {
       requestId,
+      content: fallbackContent,
+      usage: {},
+      model,
+      costUsd: 0,
+      fallback: "server_fallback",
+      warning: error instanceof Error ? error.message : `Unknown ${aiConfig.providerName} API error`,
     });
     return true;
   }
@@ -1499,6 +2323,19 @@ async function handleCreateRealVideoTask({ req, res, env, rootDir, session }) {
     timeoutMs: Number(env.DJCYTOOLS_REQUEST_TIMEOUT_MS || DEFAULT_REQUEST_TIMEOUT_MS),
   });
   const requestBody = buildRealVideoTaskBody(config, body);
+  const displayTitle = buildRealVideoTitle({
+    project: body.project || {},
+    version: body.version || {},
+    sample: body.sample || {},
+    shot: body.shot || body.sample?.shots?.[0] || {},
+  });
+  const generationTarget = buildRealVideoGenerationTarget({
+    project: body.project || {},
+    version: body.version || {},
+    sample: body.sample || {},
+    shot: body.shot || body.sample?.shots?.[0] || {},
+    requestBody,
+  });
   const startedAt = Date.now();
   const requestId = `real_video_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   const controller = new AbortController();
@@ -1536,6 +2373,17 @@ async function handleCreateRealVideoTask({ req, res, env, rootDir, session }) {
     }
 
     const task = normalizeRealVideoTask(data);
+    task.title = task.title || displayTitle;
+    task.generationTarget = generationTarget;
+    await writePendingGeneratedVideoMeta({
+      rootDir,
+      task,
+      provider: config.providerName,
+      model: config.model,
+      title: displayTitle,
+      requestBody,
+      generationTarget,
+    });
     await appendAiLog(rootDir, {
       id: requestId,
       status: "success",
@@ -1605,6 +2453,9 @@ async function handleReadRealVideoTask({ req, res, env, rootDir, taskId }) {
     const task = normalizeRealVideoTask(data);
     const localVideoUrl = await persistGeneratedVideo({ rootDir, task, provider: config.providerName, model: config.model });
     if (localVideoUrl) task.localVideoUrl = localVideoUrl;
+    const meta = await readGeneratedVideoMeta({ rootDir, taskId });
+    if (meta.title && !task.title) task.title = meta.title;
+    if (meta.generationTarget && !task.generationTarget) task.generationTarget = meta.generationTarget;
     sendJson(res, 200, {
       provider: config.providerName,
       model: config.model,
@@ -1660,6 +2511,7 @@ async function handleListGeneratedVideoShowcase({ res, rootDir, env }) {
     resolution: video.resolution,
     downloadedAt: video.downloadedAt,
     title: video.title,
+    generationTarget: video.generationTarget || null,
   }));
   sendJson(res, 200, { videos });
   return true;
@@ -1695,7 +2547,7 @@ export async function handleApiRequest({ req, res, env, rootDir = process.cwd() 
       realVideoConfigured: Boolean(realVideoConfig.apiKey),
       realVideoModel: realVideoConfig.model,
       realVideoProvider: realVideoConfig.providerName,
-      storage: "sqlite",
+      storage: buildStorageMigrationPlan(env).current,
     });
     return true;
   }
@@ -1785,9 +2637,10 @@ export async function handleApiRequest({ req, res, env, rootDir = process.cwd() 
       name: body.name,
       teamName: body.teamName,
     });
+    const emailDelivery = await deliverNotificationForAuth(rootDir, env, session.registrationNotification);
     setSessionCookie(res, session.token, session.expiresAt);
     appendAudit(rootDir, env, session, "auth.register", { targetType: "team", targetId: session.team.id });
-    sendJson(res, 201, authPayload(session));
+    sendJson(res, 201, { ...authPayload(session), emailDelivery });
     return true;
   }
 
@@ -1802,7 +2655,16 @@ export async function handleApiRequest({ req, res, env, rootDir = process.cwd() 
   if (pathname === "/api/auth/password-reset/request" && req.method === "POST") {
     const body = await readRequestBody(req, { maxBytes: Math.min(maxBytes, 16 * 1024), timeoutMs: requestTimeoutMs });
     const result = requestPasswordReset(rootDir, env, body);
-    sendJson(res, 200, result);
+    const emailDelivery = await deliverNotificationForAuth(rootDir, env, result.notification);
+    const exposeToken = shouldExposeAuthTokens(env);
+    const { notification, ...safeResult } = result;
+    sendJson(res, 200, {
+      ...safeResult,
+      token: exposeToken ? safeResult.token : "",
+      emailDelivery,
+      deliveryConfigured: emailDelivery.configured || Boolean(getNotificationWebhookUrl(env)),
+      tokenExposed: exposeToken && Boolean(safeResult.token),
+    });
     return true;
   }
 
@@ -1941,6 +2803,8 @@ export async function handleApiRequest({ req, res, env, rootDir = process.cwd() 
     sendJson(res, 200, {
       notifications: readNotificationOutboxFromDatabase(rootDir, env, session),
       webhookConfigured: Boolean(getNotificationWebhookUrl(env)),
+      emailConfigured: isEmailDeliveryConfigured(env),
+      deliveryConfigured: isEmailDeliveryConfigured(env) || Boolean(getNotificationWebhookUrl(env)),
     });
     return true;
   }
@@ -1948,7 +2812,7 @@ export async function handleApiRequest({ req, res, env, rootDir = process.cwd() 
   const notificationDeliverMatch = pathname.match(/^\/api\/notifications\/outbox\/([^/]+)\/deliver$/);
   if (notificationDeliverMatch && req.method === "POST") {
     if (!ensureRole(res, session, "owner")) return true;
-    const result = await deliverNotificationWebhook(rootDir, env, session, decodeURIComponent(notificationDeliverMatch[1]));
+    const result = await deliverNotification(rootDir, env, session, decodeURIComponent(notificationDeliverMatch[1]));
     sendJson(res, 200, result);
     return true;
   }

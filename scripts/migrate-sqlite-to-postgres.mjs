@@ -73,7 +73,8 @@ async function main() {
           'users', 'teams', 'team_members', 'projects', 'versions', 'comments',
           'exports', 'campaign_results', 'custom_templates', 'ai_logs',
           'analytics_events', 'team_invites', 'password_reset_tokens',
-          'notification_outbox', 'public_api_tokens', 'trend_snapshots', 'audit_logs'
+          'notification_outbox', 'public_api_tokens', 'trend_snapshots', 'audit_logs',
+          'app_meta', 'sessions'
         )
       ORDER BY table_name
     `);

@@ -15,11 +15,11 @@ async function callGenerateVideoSample(payload) {
     if (!response.ok) {
       const code = data.code ? `（${data.code}）` : "";
       const requestId = data.requestId ? ` 请求ID：${data.requestId}` : "";
-      throw new Error(`${data.error || "Doubao-Seed-2.0 生成视频样片失败"}${code}${requestId}`);
+      throw new Error(`${data.error || "AI 生成视频样片失败"}${code}${requestId}`);
     }
     return data;
   } catch (error) {
-    if (error?.name === "AbortError") throw new Error("Doubao-Seed-2.0 视频样片请求超时，已切换到本地镜头包兜底");
+    if (error?.name === "AbortError") throw new Error("AI 视频样片请求超时，已切换到本地镜头包兜底");
     throw error;
   } finally {
     window.clearTimeout(timeout);
@@ -40,7 +40,7 @@ export async function generateVideoSampleWithDoubao({ project, version }) {
     payload: data.content || {},
     fallback,
     meta: {
-      provider: data.provider || "Doubao-Seed-2.0",
+      provider: data.provider || "AI",
       model: data.model,
       requestId: data.requestId,
       costUsd: data.costUsd,

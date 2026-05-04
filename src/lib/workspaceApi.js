@@ -129,6 +129,7 @@ export async function saveWorkspaceToServer(workspace) {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ workspace }),
+    timeoutMs: 60_000,
   });
 }
 

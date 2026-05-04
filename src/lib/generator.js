@@ -346,7 +346,7 @@ export function createProject({ brief, params, templateCatalog = templates }) {
   return createProjectFromVersion({ brief, version });
 }
 
-export function normalizeAiVersion({ brief, params, payload, usage, model, source = "DeepSeek", requestId, costUsd, templateCatalog = templates }) {
+export function normalizeAiVersion({ brief, params, payload, usage, model, source = "AI", requestId, costUsd, templateCatalog = templates }) {
   const template = getTemplate(brief.templateId, templateCatalog);
   const market = getMarket(brief.market);
   const parameters = mergeParams(template, params);

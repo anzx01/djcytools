@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createSeedWorkspace } from "../src/lib/workspaceSeed.js";
@@ -22,6 +23,11 @@ const ROLE_LEVEL = {
   viewer: 1,
   editor: 2,
   owner: 3,
+};
+const POSTGRES_CONFLICT_TARGETS = {
+  app_meta: ["key"],
+  ai_logs: ["id"],
+  team_members: ["team_id", "user_id"],
 };
 
 function nowIso() {
@@ -129,7 +135,170 @@ function readJsonFile(filePath, fallback) {
   }
 }
 
+function getPostgresConnectionString(env = {}) {
+  const value = String(env.DJCYTOOLS_DATABASE_URL || "").trim();
+  return /^postgres(?:ql)?:\/\//.test(value) ? value : "";
+}
+
+function storageKind(db) {
+  return db?.isPostgres ? "postgresql" : "sqlite";
+}
+
+function resolvePsqlPath(env = {}) {
+  const configured = String(env.DJCYTOOLS_PSQL_BIN || "").trim();
+  if (configured) return configured;
+  const programFiles = [process.env.ProgramFiles, process.env["ProgramFiles(x86)"]].filter(Boolean);
+  for (const base of programFiles) {
+    const postgresRoot = path.join(base, "PostgreSQL");
+    if (!existsSync(postgresRoot)) continue;
+    const versions = readdirSync(postgresRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort((a, b) => Number(b) - Number(a));
+    for (const version of versions) {
+      const candidate = path.join(postgresRoot, version, "bin", "psql.exe");
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return "psql";
+}
+
+function postgresLiteral(value) {
+  if (value === null || value === undefined) return "NULL";
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function bindSqlParams(sql, params = []) {
+  let index = 0;
+  return String(sql).replace(/\?/g, () => postgresLiteral(params[index++]));
+}
+
+function quotePostgresAliases(sql) {
+  return String(sql)
+    .replace(/\bAS\s+pageViews\b/g, 'AS "pageViews"')
+    .replace(/\bAS\s+uniqueVisitors\b/g, 'AS "uniqueVisitors"')
+    .replace(/\bAS\s+lastVisitedAt\b/g, 'AS "lastVisitedAt"');
+}
+
+function replaceJsonExtract(sql) {
+  return String(sql).replace(/json_extract\(([^,]+),\s*'\$\.([^']+)'\)/g, (_match, source, dottedPath) => {
+    const pathLiteral = `{${String(dottedPath).split(".").join(",")}}`;
+    return `(${source.trim()}::jsonb #>> '${pathLiteral}')`;
+  });
+}
+
+function addPostgresConflictClause(sql, tableName, columns) {
+  const target = POSTGRES_CONFLICT_TARGETS[tableName];
+  if (!target?.length) return `${sql} ON CONFLICT DO NOTHING`;
+  const updateColumns = columns.filter((column) => !target.includes(column));
+  if (!updateColumns.length) return `${sql} ON CONFLICT (${target.join(", ")}) DO NOTHING`;
+  const updates = updateColumns.map((column) => `${column} = EXCLUDED.${column}`).join(", ");
+  return `${sql} ON CONFLICT (${target.join(", ")}) DO UPDATE SET ${updates}`;
+}
+
+function normalizePostgresSql(sql, params = []) {
+  let normalized = bindSqlParams(sql, params).trim().replace(/;+\s*$/g, "");
+  normalized = normalized.replace(/^BEGIN IMMEDIATE$/i, "BEGIN");
+  normalized = replaceJsonExtract(quotePostgresAliases(normalized));
+
+  const replaceMatch = normalized.match(/^INSERT\s+OR\s+REPLACE\s+INTO\s+([a-z_][a-z0-9_]*)\s*\(([^)]+)\)\s+VALUES\s*([\s\S]+)$/i);
+  if (replaceMatch) {
+    const [, tableName, rawColumns, valuesSql] = replaceMatch;
+    const columns = rawColumns.split(",").map((column) => column.trim());
+    const insertSql = `INSERT INTO ${tableName} (${columns.join(", ")}) VALUES ${valuesSql}`;
+    return addPostgresConflictClause(insertSql, tableName, columns);
+  }
+
+  const ignoreMatch = normalized.match(/^INSERT\s+OR\s+IGNORE\s+INTO\s+([a-z_][a-z0-9_]*)\s*\(([^)]+)\)\s+VALUES\s*([\s\S]+)$/i);
+  if (ignoreMatch) {
+    const [, tableName, rawColumns, valuesSql] = ignoreMatch;
+    const columns = rawColumns.split(",").map((column) => column.trim());
+    const insertSql = `INSERT INTO ${tableName} (${columns.join(", ")}) VALUES ${valuesSql}`;
+    return `${insertSql} ON CONFLICT DO NOTHING`;
+  }
+
+  return normalized;
+}
+
+class PostgresSyncAdapter {
+  constructor(connectionString, env = {}) {
+    this.connectionString = connectionString;
+    this.psqlPath = resolvePsqlPath(env);
+    this.psqlTimeoutMs = Math.max(3000, Number(env.DJCYTOOLS_PSQL_TIMEOUT_MS || 12000));
+    this.isPostgres = true;
+  }
+
+  exec(sql) {
+    const raw = String(sql || "").trim();
+    if (!raw) return;
+    if (/^PRAGMA\b/i.test(raw)) return;
+    if (raw.includes("CREATE TABLE IF NOT EXISTS app_meta")) {
+      this.runSql(postgresSchemaSql);
+      return;
+    }
+    this.runSql(normalizePostgresSql(raw));
+  }
+
+  prepare(sql) {
+    return {
+      get: (...params) => this.queryRows(sql, params)[0],
+      all: (...params) => this.queryRows(sql, params),
+      run: (...params) => {
+        this.runSql(normalizePostgresSql(sql, params));
+        return { changes: 0 };
+      },
+    };
+  }
+
+  queryRows(sql, params = []) {
+    const normalized = normalizePostgresSql(sql, params);
+    const wrapped = `SELECT COALESCE(json_agg(row_to_json(_djcy_rows)), '[]'::json) FROM (${normalized}) AS _djcy_rows`;
+    const output = this.runPsql(wrapped).trim();
+    return JSON.parse(output || "[]");
+  }
+
+  runSql(sql) {
+    const normalized = String(sql || "").trim();
+    if (!normalized) return "";
+    return this.runPsql(normalized);
+  }
+
+  runPsql(sql) {
+    const lockTimeoutMs = Math.min(this.psqlTimeoutMs, 5000);
+    const guardedSql = [
+      `SET lock_timeout = ${Math.max(1000, lockTimeoutMs)}`,
+      `SET statement_timeout = ${this.psqlTimeoutMs}`,
+      String(sql || ""),
+    ].join(";\n");
+    try {
+      return execFileSync(
+        this.psqlPath,
+        ["-X", "-q", "-t", "-A", "-v", "ON_ERROR_STOP=1", "-d", this.connectionString, "-f", "-"],
+        {
+          encoding: "utf8",
+          input: guardedSql,
+          maxBuffer: 16 * 1024 * 1024,
+          timeout: this.psqlTimeoutMs + 2000,
+          killSignal: "SIGTERM",
+          env: { ...process.env, PGCLIENTENCODING: "UTF8" },
+          windowsHide: true,
+        },
+      );
+    } catch (error) {
+      if (error?.signal === "SIGTERM" || error?.code === "ETIMEDOUT") {
+        throw createDatabaseError(503, "PostgreSQL 命令执行超时，请稍后重试。", "POSTGRES_PSQL_TIMEOUT");
+      }
+      throw error;
+    }
+  }
+
+  close() {}
+}
+
 function execTransaction(db, callback) {
+  if (db?.isPostgres) return callback();
   db.exec("BEGIN IMMEDIATE");
   try {
     const result = callback();
@@ -411,7 +580,7 @@ function getBootstrapConfig(env = {}) {
     teamName: env.DJCYTOOLS_TEAM_NAME || "出海短剧实验室",
     adminEmail: (env.DJCYTOOLS_ADMIN_EMAIL || "admin@djcytools.local").trim().toLowerCase(),
     adminName: env.DJCYTOOLS_ADMIN_NAME || "DJCYTools 管理员",
-    adminPassword: env.DJCYTOOLS_ADMIN_PASSWORD || "DJCYTools@2026",
+    adminPassword: env.DJCYTOOLS_ADMIN_PASSWORD || "123456",
   };
 }
 
@@ -429,7 +598,7 @@ function ensureBootstrapIdentity(db, env) {
   ).run(
     config.teamId,
     config.teamName,
-    jsonStringify({ persistence: "sqlite", language: "zh-CN" }, {}),
+    jsonStringify({ persistence: storageKind(db), language: "zh-CN" }, {}),
     timestamp,
     timestamp,
   );
@@ -464,7 +633,7 @@ function insertWorkspace(db, workspaceValue, teamId, ownerUserId) {
   db.prepare("UPDATE teams SET name = ?, active_project_id = ?, settings_json = ?, updated_at = ? WHERE id = ?").run(
     workspace.team?.name || "未命名团队",
     workspace.activeProjectId || "",
-    jsonStringify({ ...(workspace.settings || {}), persistence: "sqlite" }, {}),
+    jsonStringify({ ...(workspace.settings || {}), persistence: storageKind(db) }, {}),
     timestamp,
     teamId,
   );
@@ -504,6 +673,7 @@ function insertWorkspace(db, workspaceValue, teamId, ownerUserId) {
     );
   });
 
+  clearTeamProjectCollections(db, teamId);
   db.prepare("DELETE FROM projects WHERE team_id = ?").run(teamId);
   for (const project of workspace.projects) {
     insertProject(db, teamId, ownerUserId, project);
@@ -512,6 +682,16 @@ function insertWorkspace(db, workspaceValue, teamId, ownerUserId) {
   db.prepare("DELETE FROM custom_templates WHERE team_id = ?").run(teamId);
   for (const template of workspace.customTemplates || []) {
     insertCustomTemplate(db, teamId, template);
+  }
+}
+
+function clearTeamProjectCollections(db, teamId) {
+  const projectRows = db.prepare("SELECT id FROM projects WHERE team_id = ?").all(teamId);
+  for (const project of projectRows) {
+    db.prepare("DELETE FROM versions WHERE project_id = ?").run(project.id);
+    db.prepare("DELETE FROM comments WHERE project_id = ?").run(project.id);
+    db.prepare("DELETE FROM exports WHERE project_id = ?").run(project.id);
+    db.prepare("DELETE FROM campaign_results WHERE project_id = ?").run(project.id);
   }
 }
 
@@ -538,6 +718,7 @@ function insertProject(db, teamId, ownerUserId, project) {
   );
 
   (project.versions || []).forEach((version, index) => {
+    if (version.id) db.prepare("DELETE FROM versions WHERE id = ?").run(version.id);
     db.prepare(
       `INSERT INTO versions(id, project_id, position, name, template_name, source, model, request_id, usage_json, cost_usd, score_json, payload_json, created_at)
        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -770,6 +951,19 @@ function insertAiLog(db, teamId, userId, logItem) {
 }
 
 export function getDatabase(rootDir, env = {}) {
+  const postgresUrl = getPostgresConnectionString(env);
+  if (postgresUrl) {
+    const key = `postgres:${postgresUrl}`;
+    if (databaseHandles.has(key)) return databaseHandles.get(key);
+    const db = new PostgresSyncAdapter(postgresUrl, env);
+    initSchema(db);
+    execTransaction(db, () => {
+      ensureBootstrapIdentity(db, env);
+    });
+    databaseHandles.set(key, db);
+    return db;
+  }
+
   const paths = getDataPaths(rootDir, env);
   const key = paths.databaseFile;
   if (databaseHandles.has(key)) return databaseHandles.get(key);
@@ -785,7 +979,8 @@ export function getDatabase(rootDir, env = {}) {
 }
 
 export function closeDatabase(rootDir, env = {}) {
-  const key = getDataPaths(rootDir, env).databaseFile;
+  const postgresUrl = getPostgresConnectionString(env);
+  const key = postgresUrl ? `postgres:${postgresUrl}` : getDataPaths(rootDir, env).databaseFile;
   const db = databaseHandles.get(key);
   if (db) {
     db.close();
@@ -814,7 +1009,7 @@ export function readWorkspaceFromDatabase(rootDir, env, session) {
     .prepare("SELECT * FROM custom_templates WHERE team_id = ? ORDER BY COALESCE(heat_rank, 900), created_at DESC")
     .all(teamId)
     .map((row) => ({ ...parseJson(row.payload_json, {}), id: row.id, name: row.name, type: row.type, category: row.category }));
-  const settings = { ...parseJson(team?.settings_json, {}), persistence: "sqlite" };
+  const settings = { ...parseJson(team?.settings_json, {}), persistence: storageKind(db) };
   const activeProjectId = projects.some((project) => project.id === team?.active_project_id) ? team.active_project_id : projects[0]?.id || "";
 
   return normalizeWorkspace({
@@ -1215,6 +1410,19 @@ function buildPasswordResetNotification({ env, user, token, expiresAt }) {
   };
 }
 
+function buildRegistrationNotification({ env, user, teamName }) {
+  return {
+    subject: "[DJCYTools] 邮箱注册成功",
+    body: [
+      `${user.name || user.email}，你好。`,
+      `你的账号 ${user.email} 已注册成功。`,
+      `工作台：${teamName}`,
+      `入口：${getAppEntryUrl(env)}`,
+      "现在可以登录工作台，创建项目、生成剧本并继续生成真实短视频。",
+    ].join("\n"),
+  };
+}
+
 export function createTeamInvite(rootDir, env, session, { email, name, role } = {}) {
   const db = getDatabase(rootDir, env);
   const invitedEmail = normalizeEmail(email);
@@ -1424,7 +1632,15 @@ export function requestPasswordReset(rootDir, env, { email } = {}) {
     targetId: user.id,
     detail: { email: normalizedEmail, notificationId: notification?.id || "" },
   });
-  return { ok: true, email: normalizedEmail, token, expiresAt, notificationQueued: Boolean(notification) };
+  return {
+    ok: true,
+    email: normalizedEmail,
+    token,
+    expiresAt,
+    notificationQueued: Boolean(notification),
+    notificationId: notification?.id || "",
+    notification: notification || null,
+  };
 }
 
 export function resetPassword(rootDir, env, { token, password } = {}) {
@@ -1617,6 +1833,50 @@ export function updateNotificationDeliveryStatus(rootDir, env, session, notifica
     targetType: "notification",
     targetId: id,
     detail: { status: nextStatus, kind: notification.kind, recipient: notification.recipient },
+  });
+  return notification;
+}
+
+export function updateNotificationDeliveryStatusById(rootDir, env, notificationId, { status, channel = "", delivery = null } = {}) {
+  const db = getDatabase(rootDir, env);
+  const id = String(notificationId || "").trim();
+  const nextStatus = String(status || "").trim();
+  const nextChannel = String(channel || "").trim();
+  if (!id) throw createDatabaseError(400, "通知 ID 不能为空", "NOTIFICATION_ID_REQUIRED");
+  if (!["queued", "sent", "failed", "expired"].includes(nextStatus)) {
+    throw createDatabaseError(400, "通知状态只能是 queued、sent、failed 或 expired", "INVALID_NOTIFICATION_STATUS");
+  }
+
+  let notification;
+  execTransaction(db, () => {
+    const row = db.prepare("SELECT * FROM notification_outbox WHERE id = ?").get(id);
+    if (!row) throw createDatabaseError(404, "通知不存在", "NOTIFICATION_NOT_FOUND");
+    const timestamp = nowIso();
+    const payload = parseJson(row.payload_json, {});
+    const nextPayload = delivery
+      ? {
+          ...payload,
+          deliveryMode: nextChannel || payload.deliveryMode || row.channel,
+          deliveryAttempts: [
+            {
+              at: timestamp,
+              channel: nextChannel || row.channel,
+              status: nextStatus,
+              ...delivery,
+            },
+            ...(Array.isArray(payload.deliveryAttempts) ? payload.deliveryAttempts : []),
+          ].slice(0, 10),
+        }
+      : payload;
+    db.prepare("UPDATE notification_outbox SET status = ?, channel = ?, payload_json = ?, updated_at = ?, sent_at = ? WHERE id = ?").run(
+      nextStatus,
+      nextChannel || row.channel,
+      jsonStringify(nextPayload, {}),
+      timestamp,
+      nextStatus === "sent" ? timestamp : null,
+      id,
+    );
+    notification = notificationPayload(db.prepare("SELECT * FROM notification_outbox WHERE id = ?").get(id));
   });
   return notification;
 }
@@ -2085,6 +2345,7 @@ export function registerUser(rootDir, env, { email, password, name, teamName } =
   const timestamp = nowIso();
   const userId = stableId("user", normalizedEmail);
   const teamId = stableId("team", normalizedEmail);
+  let registrationNotification = null;
 
   execTransaction(db, () => {
     const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(normalizedEmail);
@@ -2102,7 +2363,7 @@ export function registerUser(rootDir, env, { email, password, name, teamName } =
     db.prepare(
       `INSERT INTO teams(id, name, settings_json, created_at, updated_at)
        VALUES(?, ?, ?, ?, ?)`,
-    ).run(teamId, ownedTeamName, jsonStringify({ persistence: "sqlite", language: "zh-CN" }, {}), timestamp, timestamp);
+    ).run(teamId, ownedTeamName, jsonStringify({ persistence: storageKind(db), language: "zh-CN" }, {}), timestamp, timestamp);
     db.prepare("INSERT INTO team_members(team_id, user_id, role, created_at, updated_at) VALUES(?, ?, ?, ?, ?)").run(
       teamId,
       userId,
@@ -2125,9 +2386,33 @@ export function registerUser(rootDir, env, { email, password, name, teamName } =
       teamId,
       userId,
     );
+
+    const message = buildRegistrationNotification({
+      env,
+      user: { id: userId, email: normalizedEmail, name: displayName },
+      teamName: ownedTeamName,
+    });
+    registrationNotification = insertNotificationOutboxEntry(db, {
+      teamId,
+      userId,
+      kind: "registration_welcome",
+      recipient: normalizedEmail,
+      subject: message.subject,
+      body: message.body,
+      payload: { email: normalizedEmail, deliveryMode: "local_outbox" },
+      targetType: "user",
+      targetId: userId,
+      createdByUserId: userId,
+      timestamp,
+    });
   });
 
-  return createSession(rootDir, env, normalizedEmail, password);
+  const session = createSession(rootDir, env, normalizedEmail, password);
+  return {
+    ...session,
+    registrationNotificationId: registrationNotification?.id || "",
+    registrationNotification,
+  };
 }
 
 export function readSession(rootDir, env, token) {

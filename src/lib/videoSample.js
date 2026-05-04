@@ -186,7 +186,7 @@ export function normalizeVideoSamplePayload({ project, version, payload = {}, fa
     projectId: project?.id || base.projectId || "",
     createdAt: payload.createdAt || base.createdAt || new Date().toISOString(),
     logline: payload.logline || base.logline || version?.logline || "",
-    source: meta.provider || payload.source || "Doubao-Seed-2.0",
+    source: meta.provider || payload.source || "AI",
     model: meta.model || payload.model,
     requestId: meta.requestId || payload.requestId,
     costUsd: meta.costUsd ?? payload.costUsd,
@@ -254,7 +254,7 @@ export function buildVideoRenderManifest(sample = {}) {
     schemaVersion: "djcytools.video-render.v1",
     sampleId: sample.id || "",
     sampleName: sample.name || "短剧样片",
-    source: sample.source || "Doubao-Seed-2.0",
+    source: sample.source || "AI",
     model: sample.model || "",
     requestId: sample.requestId || "",
     canvas: {
